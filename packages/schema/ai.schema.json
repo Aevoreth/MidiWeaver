@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://midiweaver.dev/schema/ai.schema.json",
+  "title": "AIPromptPayload",
+  "type": "object",
+  "required": ["global", "selection", "user_prompt"],
+  "properties": {
+    "global": { "type": "object" },
+    "selection": { "type": "object" },
+    "user_prompt": { "type": "string" },
+    "constraints": { "type": "object" }
+  }
+}

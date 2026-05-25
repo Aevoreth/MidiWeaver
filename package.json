@@ -1,0 +1,14 @@
+{
+  "name": "midiweaver",
+  "private": true,
+  "workspaces": [
+    "apps/desktop",
+    "packages/schema"
+  ],
+  "scripts": {
+    "dev:engine": "cd apps/engine && python -m uvicorn midiweaver.main:app --reload --port 8765",
+    "dev:desktop": "npm run dev --workspace=@midiweaver/desktop",
+    "test:engine": "cd apps/engine && python -m pytest tests -v",
+    "lint:desktop": "npm run lint --workspace=@midiweaver/desktop"
+  }
+}

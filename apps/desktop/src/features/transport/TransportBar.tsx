@@ -1,0 +1,58 @@
+import { Pause, Play, SkipBack, Square } from "lucide-react";
+import { Button } from "@/components/ui/button";
+
+interface TransportBarProps {
+  playing: boolean;
+  playheadTick: number;
+  ppq: number;
+  error?: string | null;
+  onPlay: () => void;
+  onPause: () => void;
+  onStop: () => void;
+  onSeekStart: () => void;
+}
+
+export function TransportBar({
+  playing,
+  playheadTick,
+  ppq,
+  error,
+  onPlay,
+  onPause,
+  onStop,
+  onSeekStart,
+}: TransportBarProps) {
+  const bar = Math.max(0, playheadTick / (ppq * 4)).toFixed(2);
+
+  return (
+    <div className="flex items-center gap-3 border-t border-border bg-panel px-3 py-2">
+      <div className="flex items-center gap-1">
+        <Button size="icon" variant="secondary" onClick={onSeekStart} aria-label="Seek to start">
+          <SkipBack className="h-4 w-4" />
+        </Button>
+        {playing ? (
+          <Button size="icon" onClick={onPause} aria-label="Pause">
+            <Pause className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button size="icon" onClick={onPlay} aria-label="Play">
+            <Play className="h-4 w-4" />
+          </Button>
+        )}
+        <Button size="icon" variant="secondary" onClick={onStop} aria-label="Stop">
+          <Square className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <div className="font-mono text-xs text-muted">
+        Bar {bar} · tick {Math.max(0, playheadTick)}
+      </div>
+
+      {error && (
+        <div className="min-w-0 flex-1 truncate text-xs text-error" title={error}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}

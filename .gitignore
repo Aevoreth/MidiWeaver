@@ -1,0 +1,23 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Tauri
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/binaries/
+
+# Projects
+*.midiweaver/
+
+# IDE
+.idea/
+.vscode/

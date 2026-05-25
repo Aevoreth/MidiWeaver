@@ -1,0 +1,60 @@
+:root,
+.dark {
+  color-scheme: dark;
+  --color-bg: #1a1b1e;
+  --color-surface: #25262b;
+  --color-panel: #2a2b30;
+  --color-border: #373a40;
+  --color-accent: #4dab9a;
+  --color-accent-muted: #3d8b7a;
+  --color-text: #e0e0e0;
+  --color-text-secondary: #868e96;
+  --color-playhead: #e8a838;
+  --color-roll-grid: #333438;
+  --color-roll-note: rgba(77, 171, 154, 0.72);
+  --color-roll-selection: rgba(77, 171, 154, 0.35);
+  --color-segment-a: #3b4252;
+  --color-segment-b: #434c5e;
+  --color-transition: rgba(232, 168, 56, 0.18);
+  --color-success: #69db7c;
+  --color-warning: #ffd43b;
+  --color-error: #ff8787;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+body {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg);
+}

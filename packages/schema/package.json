@@ -1,0 +1,16 @@
+{
+  "name": "@midiweaver/schema",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./ops": "./ops.schema.json",
+    "./project": "./project.schema.json",
+    "./ai": "./ai.schema.json",
+    "./operation-plan": "./operation-plan.schema.json",
+    "./analysis-snapshot": "./analysis-snapshot.schema.json"
+  },
+  "files": [
+    "*.schema.json"
+  ]
+}

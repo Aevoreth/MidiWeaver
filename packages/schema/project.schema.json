@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://midiweaver.dev/schema/project.schema.json",
+  "title": "MidiWeaverProject",
+  "type": "object",
+  "required": ["version", "name", "master_ppq", "songs"],
+  "properties": {
+    "version": { "type": "string" },
+    "name": { "type": "string" },
+    "master_ppq": { "type": "integer", "minimum": 1 },
+    "songs": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/SongEntry" }
+    },
+    "track_mapping": { "type": "object" },
+    "transitions": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/TransitionConfig" }
+    },
+    "settings": { "type": "object" }
+  },
+  "definitions": {
+    "SongEntry": {
+      "type": "object",
+      "required": ["id", "source_filename", "display_name"],
+      "properties": {
+        "id": { "type": "string" },
+        "source_filename": { "type": "string" },
+        "display_name": { "type": "string" },
+        "trim_start_ticks": { "type": "integer" },
+        "trim_end_ticks": { "type": "integer" }
+      }
+    },
+    "TransitionConfig": {
+      "type": "object",
+      "required": ["id", "from_song_id", "to_song_id"],
+      "properties": {
+        "id": { "type": "string" },
+        "from_song_id": { "type": "string" },
+        "to_song_id": { "type": "string" },
+        "duration_bars": { "type": "number" },
+        "mix_out_bars": { "type": "number" },
+        "mix_in_bars": { "type": "number" },
+        "template_id": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

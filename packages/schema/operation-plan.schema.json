@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://midiweaver.dev/schema/operation-plan.json",
+  "title": "OperationPlan",
+  "type": "object",
+  "required": ["version", "operations"],
+  "properties": {
+    "version": { "type": "string" },
+    "plan_summary": { "type": "string" },
+    "tempo_options": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/TempoOption" }
+    },
+    "operations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Operation" }
+    }
+  },
+  "$defs": {
+    "Operation": {
+      "type": "object",
+      "required": ["op"],
+      "properties": {
+        "op": { "type": "string" },
+        "params": { "type": "object" }
+      }
+    },
+    "TempoOption": {
+      "type": "object",
+      "required": ["id", "label", "from_bpm", "to_bpm", "duration_bars"],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "from_bpm": { "type": "number" },
+        "to_bpm": { "type": "number" },
+        "duration_bars": { "type": "integer" },
+        "curve": { "enum": ["linear", "exponential", "step"] }
+      }
+    }
+  }
+}
