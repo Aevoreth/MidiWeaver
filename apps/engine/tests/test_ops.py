@@ -208,6 +208,38 @@ def test_loop_region(project_bundle):
     assert after > before
 
 
+def test_copy_notes_by_bars(project_bundle):
+    from midiweaver.ai.op_resolve import resolve_op_params
+    from midiweaver.normalize.timeline import collect_master_notes
+    from midiweaver.project.store import get_project
+
+    store = get_project(str(project_bundle))
+    ctx = store.get_context()
+    executor = OpExecutor()
+    notes = collect_master_notes(ctx.timeline)
+    assert notes
+    start = notes[0]["start_tick"]
+    ppq = ctx.timeline.master_ppq
+    op = resolve_op_params(
+        Operation(
+            op_type="copy_notes",
+            params={
+                "source_start_tick": start,
+                "source_end_tick": start + ppq * 4,
+                "dest_offset_bars": 1,
+            },
+        ),
+        ctx.timeline,
+    )
+    assert "dest_tick" in op.params
+    errors = executor.validate_op(op)
+    assert not errors
+    new_ctx, diff = executor.apply(ctx, [op])
+    after = len(collect_master_notes(new_ctx.timeline))
+    assert after > len(notes)
+    assert len(diff.added_notes) > 0
+
+
 def test_delete_notes_in_region(project_bundle):
     from midiweaver.normalize.timeline import collect_master_notes
     from midiweaver.project.store import get_project
@@ -230,3 +262,55 @@ def test_delete_notes_in_region(project_bundle):
     )
     after = len(collect_master_notes(store.timeline))
     assert after <= before
+
+
+def test_load_replays_revisions(project_bundle):
+    from midiweaver.normalize.timeline import collect_master_notes
+    from midiweaver.project import store as store_module
+    from midiweaver.project.store import get_project, open_project
+
+    path = str(project_bundle)
+    store = get_project(path)
+    song_id = store.timeline.segments[0].id
+    before = len(collect_master_notes(store.timeline))
+    store.apply_ops(
+        [
+            Operation(
+                op_type="loop_region",
+                params={
+                    "song_id": song_id,
+                    "source_start_bar": 0,
+                    "source_end_bar": 1,
+                    "repeat_count": 2,
+                },
+            )
+        ],
+        "loop",
+    )
+    after_apply = len(collect_master_notes(store.timeline))
+    assert after_apply > before
+
+    del store_module._active_projects[path]
+    store2 = open_project(path)
+    after_reload = len(collect_master_notes(store2.timeline))
+    assert after_reload == after_apply
+
+
+def test_apply_op_rejects_noop_copy(project_bundle):
+    from midiweaver.ai.tools import ToolExecutor
+    from midiweaver.project.store import get_project
+
+    store = get_project(str(project_bundle))
+    tool_executor = ToolExecutor(store)
+    result = tool_executor.execute(
+        "apply_op",
+        {
+            "op_type": "copy_notes",
+            "params": {
+                "source_start_bar": 9999,
+                "source_end_bar": 10000,
+                "dest_offset_bars": 0,
+            },
+        },
+    )
+    assert "error" in result

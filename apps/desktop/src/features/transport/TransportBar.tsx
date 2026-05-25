@@ -1,7 +1,9 @@
 import { Focus, Pause, Play, SkipBack, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface TransportBarProps {
+  className?: string;
   playing: boolean;
   playheadTick: number;
   ppq: number;
@@ -15,6 +17,7 @@ interface TransportBarProps {
 }
 
 export function TransportBar({
+  className,
   playing,
   playheadTick,
   ppq,
@@ -29,7 +32,7 @@ export function TransportBar({
   const bar = Math.max(0, playheadTick / (ppq * 4)).toFixed(2);
 
   return (
-    <div className="flex items-center gap-3 border-t border-border bg-panel px-3 py-2">
+    <div className={cn("flex items-center gap-3 border-t border-border bg-panel px-3 py-2", className)}>
       <div className="flex items-center gap-1">
         <Button size="icon" variant="secondary" onClick={onSeekStart} aria-label="Seek to start">
           <SkipBack className="h-4 w-4" />

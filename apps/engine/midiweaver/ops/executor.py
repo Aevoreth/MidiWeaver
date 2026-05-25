@@ -44,9 +44,14 @@ class OpExecutor:
             if p.get("start_bpm", 0) < 20 or p.get("end_bpm", 0) > 300:
                 errors.append("BPM out of bounds (20-300)")
         elif op.op_type == "copy_notes":
-            for key in ("source_start_tick", "source_end_tick", "dest_tick"):
-                if key not in p:
-                    errors.append(f"copy_notes missing {key}")
+            has_ticks = "source_start_tick" in p and "source_end_tick" in p
+            has_bars = "source_start_bar" in p and "source_end_bar" in p
+            has_track = ("track_id" in p or "master_track_id" in p) and "song_id" in p
+            if not has_ticks and not has_bars and not has_track:
+                errors.append(
+                    "copy_notes needs source_start_tick/source_end_tick, "
+                    "source_start_bar/source_end_bar, or song_id with track_id"
+                )
         elif op.op_type == "echo_notes":
             has_region = "source_start_tick" in p and "source_end_tick" in p
             has_track = ("track_id" in p or "master_track_id" in p) and "song_id" in p
@@ -65,7 +70,7 @@ class OpExecutor:
             if "song_id" not in p:
                 errors.append("shift_song missing song_id")
             elif "delta_ticks" not in p and "bars" not in p:
-                errors.append("shift_song missing delta_ticks or bars")
+                errors.append("shift_song missing delta_ticks, bars, delta_bars, or shift_bars")
         elif op.op_type == "manual_edit_note":
             for key in ("song_id", "track_id"):
                 if key not in p:
@@ -85,7 +90,11 @@ class OpExecutor:
             if "song_id" not in p:
                 errors.append("loop_region missing song_id")
             elif "source_start_bar" not in p or "source_end_bar" not in p:
-                errors.append("loop_region missing source_start_bar or source_end_bar")
+                errors.append(
+                    "loop_region missing source_start_bar/source_end_bar "
+                    "(song-local bars, or master bars with bar_space:'master', "
+                    "or use_last_bars:true, or source_bar_range)"
+                )
             elif "repeat_count" not in p and "target_total_bars" not in p:
                 errors.append("loop_region missing repeat_count or target_total_bars")
         elif op.op_type == "delete_notes_in_region":
@@ -131,7 +140,12 @@ class OpExecutor:
 
     def _compute_diff(self, before: list[dict], after: list[dict]) -> RevisionDiff:
         def key(n: dict) -> tuple:
-            return (n["start_tick"], n["pitch"], n.get("track_id", ""))
+            return (
+                n.get("song_id", ""),
+                n.get("track_id", ""),
+                n["start_tick"],
+                n["pitch"],
+            )
 
         before_map = {key(n): n for n in before}
         after_map = {key(n): n for n in after}
@@ -301,6 +315,11 @@ def _copy_notes(ctx: OpContext, params: dict[str, Any]) -> OpContext:
             sync_segment_trim_bounds(seg.analysis)
             seg.trim_start_ticks = seg.analysis.trim_start_tick
             seg.trim_end_ticks = seg.analysis.trim_end_tick
+    new_ctx.timeline = build_master_timeline(
+        new_ctx.timeline.segments,
+        new_ctx.timeline.master_ppq,
+        new_ctx.timeline.transitions,
+    )
     return new_ctx
 
 

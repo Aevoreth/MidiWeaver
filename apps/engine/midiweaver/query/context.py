@@ -122,6 +122,49 @@ def get_transition_context(timeline: MasterTimeline, transition_id: str) -> dict
         "gap_ticks": gap_ticks,
         "gap_bars": ticks_to_bars(gap_ticks, ppq, bpm, beats),
         "to_song_offset_ticks": to_seg.master_start_offset_ticks,
+        "bar_spaces": {
+            "loop_region": "song-local bars (0 = trimmed song start). Use get_loop_candidates.loop_region_params.",
+            "copy_notes": "master timeline bars/ticks",
+            "insert_master_gap": "after_song_id + bars to push the next song later",
+        },
+        "suggested_ops": [
+            {
+                "op_type": "insert_master_gap",
+                "params": {
+                    "after_song_id": trans.from_song_id,
+                    "bars": max(8, int(trans.duration_bars or 16)),
+                },
+                "when": "gap_bars is 0 — create transition space before looping/copying drums",
+            },
+            {
+                "op_type": "loop_region",
+                "params": {
+                    "song_id": trans.from_song_id,
+                    "use_last_bars": True,
+                    "last_bars": 4,
+                    "target_total_bars": 16,
+                },
+                "when": "Extend outgoing song drums using song-local bars from get_loop_candidates",
+            },
+            {
+                "op_type": "copy_notes",
+                "params": {
+                    "master_source_start_bar": ticks_to_bars(mix_out_start, ppq, bpm, beats),
+                    "master_source_end_bar": ticks_to_bars(from_seg.master_end_tick, ppq, bpm, beats),
+                    "dest_offset_bars": 1,
+                },
+                "when": "Layer outgoing drums into the gap (master bars)",
+            },
+            {
+                "op_type": "tempo_ramp",
+                "params": {
+                    "start_bar": trans.master_start_bar,
+                    "end_bar": trans.master_end_bar,
+                    "duration_bars": 8,
+                },
+                "when": "Ramp tempo across the transition after the gap exists",
+            },
+        ],
     }
 
 
@@ -240,9 +283,30 @@ def get_loop_candidates(timeline: MasterTimeline, song_id: str) -> dict[str, Any
         for n in t.notes
         if last_start <= n.start_tick < end_local
     ]
+    local_start_bar = (last_start - a.trim_start_tick) / bar_ticks
+    local_end_bar = (end_local - a.trim_start_tick) / bar_ticks
+    master_start_bar = ticks_to_bars(seg.master_start_tick, ppq, bpm, beats)
+    master_end_bar = ticks_to_bars(seg.master_end_tick, ppq, bpm, beats)
 
     return {
         "song_id": song_id,
+        "bar_space_note": "loop_region source_*_bar are song-local. copy_notes uses master bars/ticks.",
+        "master_start_bar": master_start_bar,
+        "master_end_bar": master_end_bar,
+        "local_bar_count": a.bar_count,
+        "loop_region_params": {
+            "song_id": song_id,
+            "source_start_bar": local_start_bar,
+            "source_end_bar": local_end_bar,
+            "target_total_bars": 16,
+            "use_last_bars": True,
+            "last_bars": last_bars,
+        },
+        "copy_notes_params": {
+            "master_source_start_bar": ticks_to_bars(last_start + offset, ppq, bpm, beats),
+            "master_source_end_bar": ticks_to_bars(end_local + offset, ppq, bpm, beats),
+            "dest_offset_bars": 1,
+        },
         "loop_boundaries": [
             {
                 "local_tick": tick,

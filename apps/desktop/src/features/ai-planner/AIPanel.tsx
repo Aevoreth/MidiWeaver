@@ -10,6 +10,36 @@ import { Button, Input, Label, Panel } from "@/components/ui/button";
 
 type AiMode = "ask" | "plan" | "agent";
 
+function formatAgentStepDetail(step: AgentStepLog): string {
+  if (step.error) return step.error;
+  if (step.tool_name === "apply_op") {
+    const diff = step.result?.diff as
+      | { added_notes?: unknown[]; removed_notes?: unknown[]; moved_notes?: unknown[] }
+      | undefined;
+    const opType =
+      (step.result as { op_type?: string } | undefined)?.op_type ??
+      (step.tool_args as { op_type?: string } | undefined)?.op_type;
+    return [
+      step.revision_id != null ? `rev ${step.revision_id}` : null,
+      opType ?? null,
+      diff
+        ? `+${diff.added_notes?.length ?? 0} / -${diff.removed_notes?.length ?? 0} notes`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  if (step.tool_name === "dry_run_ops") {
+    const diff = step.result?.diff as
+      | { added_notes?: unknown[]; removed_notes?: unknown[] }
+      | undefined;
+    if (diff) {
+      return `preview +${diff.added_notes?.length ?? 0} / -${diff.removed_notes?.length ?? 0} notes`;
+    }
+  }
+  return "inspect";
+}
+
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -116,9 +146,10 @@ export function AIPanel({
     setAgentSummary(null);
     setAgentStatus("running");
     try {
-      const agentPrompt = usePlan && plan
-        ? `${prompt}\n\nExecute this arrangement plan:\n${JSON.stringify({ ...plan, steps: editableSteps }, null, 2)}`
-        : prompt;
+      const agentPrompt =
+        usePlan && planId
+          ? `${prompt}\n\nExecute the stored arrangement plan (plan_id already attached).`
+          : prompt;
       const result = await onAgentRun(agentPrompt, usePlan ? planId ?? undefined : undefined);
       setAgentSessionId(result.session_id);
       setAgentSteps(result.steps);
@@ -329,12 +360,10 @@ export function AIPanel({
           {agentSteps.map((step) => (
             <div key={step.step_index} className="border-t border-border pt-2 text-xs">
               <div className="font-medium">{step.tool_name}</div>
-              <div className="text-muted">
-                {step.revision_id != null && `rev ${step.revision_id} · `}
-                +{(step.result?.diff as { added_notes?: unknown[] })?.added_notes?.length ?? 0} / -
-                {(step.result?.diff as { removed_notes?: unknown[] })?.removed_notes?.length ?? 0} notes
-              </div>
-              {step.error && <div className="text-error">{step.error}</div>}
+              <div className="text-muted">{formatAgentStepDetail(step)}</div>
+              {step.error && step.tool_name !== "apply_op" && (
+                <div className="text-error">{step.error}</div>
+              )}
             </div>
           ))}
         </Panel>

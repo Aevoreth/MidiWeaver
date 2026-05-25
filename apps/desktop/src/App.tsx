@@ -25,6 +25,12 @@ import { TransportBar } from "@/features/transport/TransportBar";
 import { AIPanel } from "@/features/ai-planner/AIPanel";
 import { TrackMappingPanel } from "@/features/mapping/TrackMappingPanel";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
+import {
+  pickExportPath,
+  pickNewProjectPath,
+  pickProjectFolder,
+  projectNameFromPath,
+} from "@/lib/projectDialogs";
 
 export default function App() {
   const [engineOk, setEngineOk] = useState(false);
@@ -169,25 +175,32 @@ export default function App() {
   }, []);
 
   const newProject = async () => {
-    const name = prompt("Project name", "My Setlist");
-    if (!name) return;
-    const path = prompt("Project folder", `C:\\MidiWeaverProjects\\${name}.midiweaver`);
+    const path = await pickNewProjectPath();
     if (!path) return;
-    await api.createProject(path, name);
-    setProjectPath(path);
-    await refreshTimeline(path);
-    setStatus(`Created ${name}`);
+    try {
+      const name = projectNameFromPath(path);
+      await api.createProject(path, name);
+      setProjectPath(path);
+      await refreshTimeline(path);
+      setStatus(`Created ${name}`);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Failed to create project");
+    }
   };
 
   const openProject = async () => {
-    const path = prompt("Open .midiweaver folder");
+    const path = await pickProjectFolder();
     if (!path) return;
-    const data = await api.openProject(path);
-    setProjectPath(path);
-    setTimeline(data.timeline);
-    const mapping = (data.meta.track_mapping as TrackMappingEntry[] | undefined) ?? [];
-    setTrackMapping(mapping);
-    setStatus(`Opened ${path}`);
+    try {
+      const data = await api.openProject(path);
+      setProjectPath(path);
+      setTimeline(data.timeline);
+      const mapping = (data.meta.track_mapping as TrackMappingEntry[] | undefined) ?? [];
+      setTrackMapping(mapping);
+      setStatus(`Opened ${projectNameFromPath(path)}`);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Failed to open project");
+    }
   };
 
   const importMidi = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -242,8 +255,8 @@ export default function App() {
   const editBarRange = tickRangeToBarRange(editRange, ppq);
 
   return (
-    <div className="flex h-full flex-col bg-background text-foreground">
-      <header className="flex items-center gap-2 border-b border-border bg-panel px-4 py-2">
+    <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
+      <header className="flex shrink-0 items-center gap-2 border-b border-border bg-panel px-4 py-2">
         <Music className="h-5 w-5 text-accent" />
         <span className="font-semibold">MidiWeaver</span>
         <Badge className={engineOk ? "text-accent" : "text-error"}>
@@ -270,10 +283,14 @@ export default function App() {
           disabled={!projectPath}
           onClick={async () => {
             if (!projectPath) return;
-            const out = prompt("Export path", "C:\\MidiWeaverProjects\\export.mid");
+            const out = await pickExportPath();
             if (!out) return;
-            const report = await api.exportMidi(projectPath, out);
-            setStatus(`Exported ${report.track_count} tracks`);
+            try {
+              const report = await api.exportMidi(projectPath, out);
+              setStatus(`Exported ${report.track_count} tracks`);
+            } catch (err) {
+              setStatus(err instanceof Error ? err.message : "Export failed");
+            }
           }}
         >
           <Download className="h-4 w-4" /> Export
@@ -284,12 +301,12 @@ export default function App() {
       </header>
 
       {status && (
-        <div className="border-b border-border bg-surface px-4 py-1 text-xs text-muted">{status}</div>
+        <div className="shrink-0 border-b border-border bg-surface px-4 py-1 text-xs text-muted">{status}</div>
       )}
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-56 shrink-0 border-r border-border bg-panel p-2">
-          <div className="mb-2 flex gap-1 text-xs">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <aside className="flex w-56 shrink-0 flex-col overflow-hidden border-r border-border bg-panel p-2">
+          <div className="mb-2 flex shrink-0 gap-1 text-xs">
             {(["songs", "mapping", "ai"] as const).map((t) => (
               <button
                 key={t}
@@ -302,8 +319,9 @@ export default function App() {
             ))}
           </div>
 
+          <div className="min-h-0 flex-1 overflow-y-auto">
           {sidebarTab === "songs" && (
-            <div className="space-y-2 overflow-auto text-xs">
+            <div className="space-y-2 text-xs">
               {timeline?.segments.map((s, i) => (
                 <div key={s.id} className="rounded border border-border bg-surface p-2">
                   <div className="font-medium">
@@ -390,11 +408,28 @@ export default function App() {
                   },
                   mock: forceMockAi,
                 });
-                if (result.timeline) {
-                  setTimeline(result.timeline);
-                  const lastStep = result.steps[result.steps.length - 1];
-                  const diff = lastStep?.result?.diff as RevisionDiff | undefined;
-                  if (diff) setLastDiff(diff);
+                const tl = result.timeline ?? (await refreshTimeline(projectPath));
+                if (tl) {
+                  setTimeline(tl);
+                  const applySteps = result.steps.filter(
+                    (s) => s.tool_name === "apply_op" && s.revision_id != null,
+                  );
+                  const lastApply = applySteps[applySteps.length - 1];
+                  const diff = lastApply?.result?.diff as RevisionDiff | undefined;
+                  if (
+                    diff &&
+                    (diff.added_notes.length > 0 ||
+                      diff.removed_notes.length > 0 ||
+                      diff.moved_notes.length > 0)
+                  ) {
+                    setLastDiff(diff);
+                  }
+                  const updatedTrans = tl.transitions.find((t) => t.id === selectedTransitionId);
+                  const range = updatedTrans ? getTransitionTickRange(tl, updatedTrans) : null;
+                  if (range) {
+                    setEditRange(range);
+                    zoomToTransitionRange(range);
+                  }
                 }
                 setStatus(`Agent ${result.status}`);
                 return result;
@@ -403,14 +438,20 @@ export default function App() {
                 await api.agentCancel(sessionId);
               }}
               onTimelineRefresh={async () => {
-                const t = await api.getTimeline(projectPath);
-                setTimeline(t);
+                if (!projectPath) return;
+                const tl = await refreshTimeline(projectPath);
+                if (tl && selectedTransitionId) {
+                  const trans = tl.transitions.find((t) => t.id === selectedTransitionId);
+                  const range = trans ? getTransitionTickRange(tl, trans) : null;
+                  if (range) zoomToTransitionRange(range);
+                }
               }}
             />
           )}
+          </div>
         </aside>
 
-        <main className="flex min-w-0 flex-1 flex-col gap-2 p-2">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-hidden p-2">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <label className="text-muted">Snap</label>
             <select
@@ -448,7 +489,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="h-36 shrink-0">
+          <div className="h-44 shrink-0">
             <MasterTimeline
               timeline={timeline}
               playheadTick={playheadTick}
@@ -498,6 +539,7 @@ export default function App() {
       </div>
 
       <TransportBar
+        className="shrink-0"
         playing={playing}
         playheadTick={playheadTick}
         ppq={ppq}

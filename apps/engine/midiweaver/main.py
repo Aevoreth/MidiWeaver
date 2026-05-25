@@ -390,13 +390,18 @@ def reorder_songs(body: ReorderSongsRequest) -> dict[str, Any]:
 @app.post("/api/ai/ask")
 async def ai_ask(body: AskRequest) -> dict[str, Any]:
     store = get_project(body.project_path)
-    tool_executor = ToolExecutor(store, _executor)
+    selection = normalize_selection(body.selection)
+    tool_executor = ToolExecutor(store, _executor, selection=selection)
     assistant = AskAssistant(_settings.ai_base_url, _settings.ai_api_key, _settings.ai_model)
     use_mock = body.mock or not _settings.ai_api_key
     try:
         result = await assistant.chat(body.messages, tool_executor, mock=use_mock)
-    except httpx.HTTPStatusError as e:
+    except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    except httpx.HTTPStatusError as e:
+        from midiweaver.ai.openai_http import format_http_status_error
+
+        raise HTTPException(400, format_http_status_error(e)) from e
     except Exception as e:
         raise HTTPException(400, str(e)) from e
     return result
@@ -414,7 +419,7 @@ async def ai_plan(body: AIPlanRequest) -> dict[str, Any]:
         body.user_prompt,
         body.constraints,
     )
-    tool_executor = ToolExecutor(store, _executor)
+    tool_executor = ToolExecutor(store, _executor, selection=selection)
     planner = ArrangementPlanner(_settings.ai_base_url, _settings.ai_api_key, _settings.ai_model)
     use_mock = body.mock or not _settings.ai_api_key
     try:

@@ -4,6 +4,7 @@ import time
 import uuid
 from typing import Any
 
+from midiweaver.ai.op_resolve import resolve_op_params
 from midiweaver.models import ArrangementPlan, Operation
 from midiweaver.ops.executor import OpExecutor
 from midiweaver.project.store import ProjectStore
@@ -29,6 +30,38 @@ READ_TOOLS = {
 WRITE_TOOLS = {"apply_op"}
 
 ALL_TOOLS = READ_TOOLS | WRITE_TOOLS
+
+NOTE_MUTATING_OPS = {
+    "copy_notes",
+    "echo_notes",
+    "loop_region",
+    "extend_drums",
+    "delete_notes_in_region",
+    "shift_song",
+    "manual_edit_note",
+    "transpose_region",
+    "quantize_region",
+}
+
+_NOOP_HINTS: dict[str, str] = {
+    "loop_region": (
+        "Use get_loop_candidates.loop_region_params (song-local bars), "
+        "use_last_bars:true, or master_source_*_bar with bar_space:'master'."
+    ),
+    "copy_notes": (
+        "Use master_source_start_bar/end_bar from get_loop_candidates.copy_notes_params "
+        "or explicit master source_start_tick/source_end_tick."
+    ),
+    "shift_song": (
+        "Verify song_id from get_timeline_summary. Use delta_bars with direction:'earlier' "
+        "to overlap, or insert_master_gap to create space between songs."
+    ),
+}
+
+
+def _noop_message(op_type: str) -> str:
+    hint = _NOOP_HINTS.get(op_type, "Inspect with query_notes and adjust params.")
+    return f"{op_type} had no effect on notes. {hint}"
 
 
 class PlanStore:
@@ -97,6 +130,24 @@ plan_store = PlanStore()
 agent_session_store = AgentSessionStore()
 
 
+def _object_schema(
+    properties: dict[str, Any],
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _freeform_object() -> dict[str, Any]:
+    return {"type": "object", "additionalProperties": True}
+
+
 def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
     schemas: list[dict[str, Any]] = [
         {
@@ -104,7 +155,7 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
             "function": {
                 "name": "get_timeline_summary",
                 "description": "Get songs, transitions, track mapping, and tempo events.",
-                "parameters": {"type": "object", "properties": {}, "required": []},
+                "parameters": _object_schema({}),
             },
         },
         {
@@ -112,11 +163,7 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
             "function": {
                 "name": "get_transition_context",
                 "description": "Get mix in/out, gap size, and tick ranges for a transition.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"transition_id": {"type": "string"}},
-                    "required": ["transition_id"],
-                },
+                "parameters": _object_schema({"transition_id": {"type": "string"}}, ["transition_id"]),
             },
         },
         {
@@ -124,9 +171,8 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
             "function": {
                 "name": "query_notes",
                 "description": "Query notes in a master bar or tick range (paginated, max 500).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
+                "parameters": _object_schema(
+                    {
                         "start_bar": {"type": "number"},
                         "end_bar": {"type": "number"},
                         "start_tick": {"type": "integer"},
@@ -135,8 +181,8 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
                         "track_id": {"type": "string"},
                         "limit": {"type": "integer"},
                         "offset": {"type": "integer"},
-                    },
-                },
+                    }
+                ),
             },
         },
         {
@@ -144,14 +190,13 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
             "function": {
                 "name": "analyze_region",
                 "description": "Per-bar note density and pitch histogram in a bar range.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
+                "parameters": _object_schema(
+                    {
                         "start_bar": {"type": "number"},
                         "end_bar": {"type": "number"},
                     },
-                    "required": ["start_bar", "end_bar"],
-                },
+                    ["start_bar", "end_bar"],
+                ),
             },
         },
         {
@@ -159,11 +204,7 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
             "function": {
                 "name": "get_loop_candidates",
                 "description": "Loop boundaries and last-bar region for a song.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"song_id": {"type": "string"}},
-                    "required": ["song_id"],
-                },
+                "parameters": _object_schema({"song_id": {"type": "string"}}, ["song_id"]),
             },
         },
         {
@@ -171,24 +212,22 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
             "function": {
                 "name": "dry_run_ops",
                 "description": "Simulate ops and return diff without committing.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
+                "parameters": _object_schema(
+                    {
                         "ops": {
                             "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
+                            "items": _object_schema(
+                                {
                                     "op_type": {"type": "string"},
-                                    "params": {"type": "object"},
+                                    "params": _freeform_object(),
                                     "description": {"type": "string"},
                                 },
-                                "required": ["op_type", "params"],
-                            },
+                                ["op_type", "params"],
+                            ),
                         }
                     },
-                    "required": ["ops"],
-                },
+                    ["ops"],
+                ),
             },
         },
         {
@@ -196,14 +235,13 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
             "function": {
                 "name": "measure_region",
                 "description": "Count notes and measure span/gap after edits.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
+                "parameters": _object_schema(
+                    {
                         "start_bar": {"type": "number"},
                         "end_bar": {"type": "number"},
                         "song_id": {"type": "string"},
-                    },
-                },
+                    }
+                ),
             },
         },
     ]
@@ -213,16 +251,24 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
                 "type": "function",
                 "function": {
                     "name": "apply_op",
-                    "description": "Apply a single validated operation (commits as one revision).",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
+                    "description": (
+                        "Apply a single validated operation (commits as one revision). "
+                        "Workflow for transitions with no gap: "
+                        "1) insert_master_gap after outgoing song, "
+                        "2) loop_region with get_loop_candidates.loop_region_params (song-local bars), "
+                        "3) copy_notes with get_loop_candidates.copy_notes_params (master bars), "
+                        "4) tempo_ramp with start_bar/end_bar. "
+                        "loop_region source_*_bar are song-local (not master). "
+                        "copy_notes uses master bars/ticks."
+                    ),
+                    "parameters": _object_schema(
+                        {
                             "op_type": {"type": "string"},
-                            "params": {"type": "object"},
+                            "params": _freeform_object(),
                             "description": {"type": "string"},
                         },
-                        "required": ["op_type", "params"],
-                    },
+                        ["op_type", "params"],
+                    ),
                 },
             }
         )
@@ -230,9 +276,15 @@ def tool_schemas(include_write: bool = True) -> list[dict[str, Any]]:
 
 
 class ToolExecutor:
-    def __init__(self, store: ProjectStore, executor: OpExecutor | None = None) -> None:
+    def __init__(
+        self,
+        store: ProjectStore,
+        executor: OpExecutor | None = None,
+        selection: dict[str, Any] | None = None,
+    ) -> None:
         self.store = store
         self.executor = executor or OpExecutor()
+        self.selection = selection or {}
         import json
         from midiweaver.models import ProjectMetadata
 
@@ -254,7 +306,10 @@ class ToolExecutor:
         if name == "measure_region":
             return measure_region(timeline, **{k: v for k, v in args.items() if v is not None})
         if name == "dry_run_ops":
-            ops = [Operation(**op) for op in args.get("ops", [])]
+            ops = [
+                resolve_op_params(Operation(**op), self.store.timeline, self.selection)
+                for op in args.get("ops", [])
+            ]
             errors: list[str] = []
             for op in ops:
                 errors.extend(self.executor.validate_op(op))
@@ -264,17 +319,42 @@ class ToolExecutor:
             diff = self.executor.dry_run(ctx, ops)
             return {"diff": diff.model_dump(), "valid": True}
         if name == "apply_op":
-            op = Operation(
-                op_type=args["op_type"],
-                params=args.get("params", {}),
-                description=args.get("description", ""),
+            op = resolve_op_params(
+                Operation(
+                    op_type=args["op_type"],
+                    params=args.get("params", {}),
+                    description=args.get("description", ""),
+                ),
+                self.store.timeline,
+                self.selection,
             )
             errors = self.executor.validate_op(op)
             if errors:
-                return {"error": errors}
+                return {"error": errors, "resolved_params": op.params}
+            song_id = op.params.get("song_id") or op.params.get("after_song_id")
+            if op.op_type in ("shift_song", "loop_region") and song_id:
+                if not any(s.id == song_id for s in self.store.timeline.segments):
+                    return {
+                        "error": f"song_id not found on timeline: {song_id}",
+                        "resolved_params": op.params,
+                    }
+            ctx = self.store.get_context()
+            preview_diff = self.executor.dry_run(ctx, [op])
+            if op.op_type in NOTE_MUTATING_OPS:
+                if (
+                    not preview_diff.added_notes
+                    and not preview_diff.removed_notes
+                    and not preview_diff.moved_notes
+                ):
+                    return {
+                        "error": _noop_message(op.op_type),
+                        "resolved_params": op.params,
+                    }
             rev = self.store.apply_ops([op], label=op.description[:80] or f"Agent: {op.op_type}")
             return {
                 "revision_id": rev.id,
+                "op_type": op.op_type,
+                "resolved_params": op.params,
                 "diff": rev.diff.model_dump() if rev.diff else {},
                 "timeline_total_bars": self.store.timeline.total_bars,
             }

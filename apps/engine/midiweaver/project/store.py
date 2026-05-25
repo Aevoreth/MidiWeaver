@@ -56,6 +56,8 @@ class ProjectStore:
         meta = ProjectMetadata(**json.loads(self.project_json.read_text(encoding="utf-8")))
         self._init_db()
         self._rebuild_timeline(meta)
+        if self._undo_pointer > 0:
+            self._replay_to_pointer()
         return meta
 
     def save(self, meta: ProjectMetadata) -> None:
@@ -151,6 +153,14 @@ class ProjectStore:
 
         ensure_timeline_note_ids(self._timeline)
 
+    def _persist_timeline_analysis(self) -> None:
+        """Write current in-memory analysis snapshots back to the cache."""
+        if not self._conn or not self._timeline:
+            return
+        for seg in self._timeline.segments:
+            if seg.analysis:
+                self._cache_analysis(seg.id, seg.analysis)
+
     def _cache_analysis(self, song_id: str, analysis: Any) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO analysis_cache (song_id, snapshot_json) VALUES (?, ?)",
@@ -226,6 +236,7 @@ class ProjectStore:
         self._conn.commit()
 
         self._timeline = new_ctx.timeline
+        self._persist_timeline_analysis()
         return Revision(id=rev_id, label=label, ops=ops, diff=diff, created_at=now)
 
     def undo(self) -> Revision | None:
@@ -261,6 +272,7 @@ class ProjectStore:
             ops = [Operation(**o) for o in json.loads(row["ops_json"])]
             ctx, _ = executor.apply(ctx, ops)
         self._timeline = ctx.timeline
+        self._persist_timeline_analysis()
 
     def get_revision(self, rev_id: int) -> Revision | None:
         row = self._conn.execute(

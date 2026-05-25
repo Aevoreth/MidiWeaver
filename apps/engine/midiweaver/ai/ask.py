@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+from midiweaver.ai.openai_http import post_chat_completion
+from midiweaver.ai.tool_compact import compact_tool_result, trim_conversation
 from midiweaver.ai.tools import ToolExecutor, tool_schemas
 from midiweaver.models import Operation
 
@@ -36,18 +38,20 @@ When the user asks about a region, call query_notes or analyze_region first."""
             return self._mock_response(messages, tool_executor)
 
         tools = tool_schemas(include_write=False)
-        convo = [{"role": "system", "content": self.SYSTEM_PROMPT}, *messages]
+        convo = trim_conversation([{"role": "system", "content": self.SYSTEM_PROMPT}, *messages])
         tool_calls_made: list[dict[str, Any]] = []
 
         for _ in range(max_tool_rounds):
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                resp = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=self._headers(),
-                    json={"model": self.model, "messages": convo, "tools": tools},
-                )
-                resp.raise_for_status()
-                msg = resp.json()["choices"][0]["message"]
+            data = await post_chat_completion(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                model=self.model,
+                messages=trim_conversation(convo),
+                tools=True,
+                tool_defs=tools,
+                timeout=90.0,
+            )
+            msg = data["choices"][0]["message"]
 
             if not msg.get("tool_calls"):
                 return {
@@ -63,11 +67,12 @@ When the user asks about a region, call query_notes or analyze_region first."""
                 args = json.loads(fn.get("arguments") or "{}")
                 result = tool_executor.execute(name, args)
                 tool_calls_made.append({"name": name, "args": args, "result": result})
+                llm_result = compact_tool_result(name, result)
                 convo.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": json.dumps(result),
+                        "content": json.dumps(llm_result),
                     }
                 )
 

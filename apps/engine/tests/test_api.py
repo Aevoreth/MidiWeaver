@@ -136,18 +136,10 @@ def test_ai_plan_mode_live_with_key(client, project_bundle, isolated_settings):
         "constraints_applied": {},
     }
 
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {
-        "choices": [{"message": {"content": json.dumps(live_plan)}}]
-    }
+    async def fake_post_chat_completion(**kwargs):
+        return {"choices": [{"message": {"content": json.dumps(live_plan)}}]}
 
-    mock_client_instance = AsyncMock()
-    mock_client_instance.post = AsyncMock(return_value=mock_resp)
-    mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
-    mock_client_instance.__aexit__ = AsyncMock(return_value=None)
-
-    with patch("midiweaver.ai.agent.httpx.AsyncClient", return_value=mock_client_instance):
+    with patch("midiweaver.ai.agent.post_chat_completion", side_effect=fake_post_chat_completion):
         r = client.post(
             "/api/ai/plan",
             json={

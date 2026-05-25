@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import httpx
-
+from midiweaver.ai.openai_http import post_chat_completion
+from midiweaver.ai.tool_compact import compact_plan_for_prompt, compact_tool_result, trim_conversation
 from midiweaver.ai.tools import AgentSessionStore, ToolExecutor, agent_session_store, plan_store, tool_schemas
 from midiweaver.models import AgentStepLog, ArrangementPlan, Operation, PlanStep
 from midiweaver.ops.executor import OpExecutor
@@ -14,11 +14,22 @@ class ArrangementAgent:
     """Tool-calling agent with step_commit revisions."""
 
     SYSTEM_PROMPT = """You are MidiWeaver's arrangement agent. Execute transition edits using tools.
-Always inspect the timeline before large edits (get_timeline_summary, query_notes, analyze_region).
+Always inspect before editing: get_timeline_summary, get_transition_context, get_loop_candidates, query_notes.
 Use apply_op to commit one operation at a time. Each apply_op creates an undoable revision.
-Available ops include: loop_region, insert_master_gap, delete_notes_in_region, copy_notes,
-echo_notes, shift_song, tempo_ramp, set_transition_markers, extend_drums, trim_silence, mute_track.
-After edits that should add bars or notes, call measure_region to verify results.
+
+Transition workflow when gap_bars is 0:
+1) insert_master_gap — after_song_id = outgoing song, bars = transition length (e.g. 16–31)
+2) loop_region — use loop_region_params from get_loop_candidates (song-local bars, NOT master bars)
+3) copy_notes — layer drums using copy_notes_params from get_loop_candidates (master bars)
+4) tempo_ramp — start_bar/end_bar from transition context, duration_bars for ramp length
+
+Param spaces (critical):
+- loop_region source_start_bar/source_end_bar = song-local (0 = trimmed song start)
+- copy_notes source_* = master timeline bars or ticks
+- insert_master_gap creates space; shift_song moves notes within one song (does not create gap)
+
+Shortcuts: loop_region use_last_bars:true, copy_notes master_source_start_bar, shift_song delta_bars.
+If apply_op returns resolved_params, fix params and retry. Call measure_region to verify after edits.
 When done, respond with a brief summary and stop calling tools."""
 
     def __init__(
@@ -50,9 +61,9 @@ When done, respond with a brief summary and stop calling tools."""
         mock: bool = False,
     ) -> dict[str, Any]:
         if mock or not self.api_key:
-            return await self._mock_run(store, prompt, plan_id, session_id)
+            return await self._mock_run(store, prompt, plan_id, session_id, selection)
 
-        tool_executor = ToolExecutor(store, self.executor)
+        tool_executor = ToolExecutor(store, self.executor, selection=selection)
         plan = plan_store.get(plan_id) if plan_id else None
         context = self._build_context(selection, plan)
 
@@ -71,13 +82,15 @@ When done, respond with a brief summary and stop calling tools."""
 
         user_content = f"{context}\n\nUser request: {prompt}"
         if plan:
-            user_content += f"\n\nArrangement plan to execute:\n{plan.model_dump_json()}"
+            user_content += f"\n\nArrangement plan to execute:\n{compact_plan_for_prompt(plan)}"
 
-        convo: list[dict[str, Any]] = [
-            {"role": "system", "content": self.SYSTEM_PROMPT},
-            *session.get("messages", []),
-            {"role": "user", "content": user_content},
-        ]
+        convo: list[dict[str, Any]] = trim_conversation(
+            [
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                *session.get("messages", []),
+                {"role": "user", "content": user_content},
+            ]
+        )
 
         tools = tool_schemas(include_write=True)
         steps: list[dict[str, Any]] = list(session.get("steps", []))
@@ -87,19 +100,20 @@ When done, respond with a brief summary and stop calling tools."""
                 session["status"] = "cancelled"
                 break
 
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=self._headers(),
-                    json={"model": self.model, "messages": convo, "tools": tools},
-                )
-                resp.raise_for_status()
-                msg = resp.json()["choices"][0]["message"]
+            data = await post_chat_completion(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                model=self.model,
+                messages=trim_conversation(convo),
+                tools=True,
+                tool_defs=tools,
+            )
+            msg = data["choices"][0]["message"]
 
             if not msg.get("tool_calls"):
                 convo.append(msg)
                 session["status"] = "done"
-                session["messages"] = [m for m in convo if m["role"] != "system"]
+                session["messages"] = trim_conversation([m for m in convo if m["role"] != "system"])
                 session["steps"] = steps
                 session["summary"] = msg.get("content", "")
                 self.session_store.update(session_id, session)
@@ -128,18 +142,19 @@ When done, respond with a brief summary and stop calling tools."""
                 if isinstance(result.get("error"), list):
                     step_log.error = "; ".join(result["error"])
                 steps.append(step_log.model_dump())
+                llm_result = compact_tool_result(name, result)
                 convo.append(
                     {
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": json.dumps(result),
+                        "content": json.dumps(llm_result),
                     }
                 )
 
         session["status"] = session.get("status", "running")
         if session["status"] == "running":
             session["status"] = "max_steps"
-        session["messages"] = [m for m in convo if m["role"] != "system"]
+        session["messages"] = trim_conversation([m for m in convo if m["role"] != "system"])
         session["steps"] = steps
         self.session_store.update(session_id, session)
         return {
@@ -161,8 +176,9 @@ When done, respond with a brief summary and stop calling tools."""
         prompt: str,
         plan_id: str | None,
         session_id: str | None,
+        selection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        tool_executor = ToolExecutor(store, self.executor)
+        tool_executor = ToolExecutor(store, self.executor, selection=selection or {})
         steps: list[dict[str, Any]] = []
         seg = store.timeline.segments[0] if store.timeline.segments else None
         if seg:
@@ -238,19 +254,17 @@ Use inspect context provided. Do not output raw MIDI."""
             {"role": "system", "content": self.SYSTEM_PROMPT},
             {"role": "user", "content": inspect + "\n\nRespond with ArrangementPlan JSON only."},
         ]
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=self._headers(),
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-            resp.raise_for_status()
-            data = json.loads(resp.json()["choices"][0]["message"]["content"])
-        return ArrangementPlan(**data)
+        data = await post_chat_completion(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            model=self.model,
+            messages=messages,
+            response_format={"type": "json_object"},
+            timeout=90.0,
+        )
+        content = data["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        return ArrangementPlan(**parsed)
 
     def _mock_plan(self, payload: dict[str, Any]) -> ArrangementPlan:
         from midiweaver.models import TempoOption
