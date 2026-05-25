@@ -10,12 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from midiweaver import __version__
-from midiweaver.ai.planner import AIPlanner, OllamaClientStub, PromptBuilder
+from midiweaver.ai.planner import AIPlanner, OllamaClientStub, PromptBuilder, resolve_plan, _song_segments_from_timeline
 from midiweaver.audio.engine import AudioEngine, MidiExporter
-from midiweaver.config import DEFAULT_SETTINGS
 from midiweaver.models import Operation, OperationPlan, TrackMappingEntry
 from midiweaver.ops.executor import OpExecutor
 from midiweaver.project.store import create_project, get_project, open_project
+from midiweaver.settings_store import load_settings, save_settings, settings_public_view
 
 app = FastAPI(title="MidiWeaver Engine", version=__version__)
 app.add_middleware(
@@ -26,7 +26,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_settings = DEFAULT_SETTINGS.model_copy()
+_settings = load_settings()
 _audio = AudioEngine()
 _exporter = MidiExporter()
 _executor = OpExecutor()
@@ -56,13 +56,14 @@ class AIPlanRequest(BaseModel):
     user_prompt: str
     selection: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
-    mock: bool = True
+    mock: bool = False
 
 
 class ApplyPlanRequest(BaseModel):
     project_path: str
     plan: OperationPlan
     enabled_op_indices: list[int] | None = None
+    transition_id: str | None = None
 
 
 class TrackMappingRequest(BaseModel):
@@ -119,10 +120,28 @@ class SettingsUpdate(BaseModel):
     ai_base_url: str | None = None
     ai_api_key: str | None = None
     ai_model: str | None = None
+    clear_ai_api_key: bool | None = None
     ollama_enabled: bool | None = None
     audio_backend: str | None = None
     soundfont_path: str | None = None
     midi_device: str | None = None
+
+
+def _apply_settings_update(body: SettingsUpdate) -> None:
+    global _settings
+    updates = body.model_dump(exclude_none=True)
+
+    if updates.pop("clear_ai_api_key", False):
+        _settings = _settings.model_copy(update={"ai_api_key": ""})
+
+    new_key = updates.pop("ai_api_key", None)
+    if new_key:
+        _settings = _settings.model_copy(update={"ai_api_key": new_key})
+
+    if updates:
+        _settings = _settings.model_copy(update=updates)
+
+    save_settings(_settings)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -132,20 +151,29 @@ def health() -> HealthResponse:
 
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
-    return _settings.model_dump()
+    return settings_public_view(_settings)
 
 
 @app.post("/api/settings")
 def update_settings(body: SettingsUpdate) -> dict[str, Any]:
     global _audio
-    for k, v in body.model_dump(exclude_none=True).items():
-        setattr(_settings, k, v)
+    _apply_settings_update(body)
     _audio = AudioEngine(
         backend=_settings.audio_backend,
         soundfont_path=_settings.soundfont_path,
         midi_device=_settings.midi_device,
     )
-    return _settings.model_dump()
+    return settings_public_view(_settings)
+
+
+@app.post("/api/ai/test-connection")
+async def test_ai_connection() -> dict[str, Any]:
+    planner = AIPlanner(_settings.ai_base_url, _settings.ai_api_key, _settings.ai_model)
+    try:
+        result = await planner.test_connection()
+        return {"ok": True, "model": _settings.ai_model, **result}
+    except ValueError as e:
+        return {"ok": False, "model": _settings.ai_model, "error": str(e)}
 
 
 @app.post("/api/projects/create")
@@ -244,8 +272,13 @@ async def ai_plan(body: AIPlanRequest) -> dict[str, Any]:
         body.constraints,
     )
     planner = AIPlanner(_settings.ai_base_url, _settings.ai_api_key, _settings.ai_model)
-    plan = await planner.plan(payload, mock=body.mock)
-    return {"payload": payload, "plan": plan.model_dump()}
+    use_mock = body.mock or not _settings.ai_api_key
+    try:
+        plan = await planner.plan(payload, mock=use_mock)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    mode = "mock" if use_mock else "live"
+    return {"payload": payload, "plan": plan.model_dump(), "mode": mode}
 
 
 @app.post("/api/ai/validate-plan")
@@ -258,14 +291,26 @@ def validate_plan(plan: OperationPlan) -> dict[str, Any]:
 @app.post("/api/ai/apply-plan")
 def apply_plan(body: ApplyPlanRequest) -> dict[str, Any]:
     store = get_project(body.project_path)
-    ops = body.plan.ops
+    plan = resolve_plan(
+        body.plan,
+        ppq=store.timeline.master_ppq,
+        song_segments=_song_segments_from_timeline(store.timeline),
+        timeline=store.timeline,
+        transition_id=body.transition_id,
+        merge_selected_tempo_option=True,
+    )
+    planner = AIPlanner(_settings.ai_base_url, _settings.ai_api_key, _settings.ai_model)
+    validated, errors = planner.validate_plan(plan.model_dump())
+    if validated is None:
+        raise HTTPException(status_code=400, detail=f"Invalid plan: {errors}")
+    ops = validated.ops
     if body.enabled_op_indices is not None:
         enabled = set(body.enabled_op_indices)
         ops = [
             op.model_copy(update={"enabled": i in enabled})
-            for i, op in enumerate(body.plan.ops)
+            for i, op in enumerate(validated.ops)
         ]
-    rev = store.apply_ops(ops, label=body.plan.plan_summary[:80])
+    rev = store.apply_ops(ops, label=validated.plan_summary[:80])
     return {"revision": rev.model_dump(), "timeline": store.timeline.model_dump()}
 
 

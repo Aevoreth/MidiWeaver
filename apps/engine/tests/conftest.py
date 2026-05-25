@@ -83,3 +83,16 @@ def project_bundle(tmp_path: Path, fixture_dir: Path) -> Path:
     store.import_midi(fixture_dir / "song_a.mid", "Song A")
     store.import_midi(fixture_dir / "song_b.mid", "Song B")
     return bundle
+
+
+@pytest.fixture
+def isolated_settings(tmp_path: Path):
+    from midiweaver import main as main_module
+    from midiweaver.settings_store import load_settings, set_config_dir
+
+    config_dir = tmp_path / "config"
+    set_config_dir(config_dir)
+    main_module._settings = load_settings()
+    yield config_dir
+    set_config_dir(None)
+    main_module._settings = load_settings()

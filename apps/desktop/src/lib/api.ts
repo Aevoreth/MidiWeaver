@@ -9,16 +9,35 @@ export class EngineError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const baseUrl = await getEngineUrl();
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...init?.headers,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      headers: {
+        ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...init?.headers,
+      },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Network error";
+    throw new EngineError(
+      msg === "Failed to fetch"
+        ? "Could not reach the MidiWeaver engine. Check that it is running."
+        : msg,
+    );
+  }
   if (!res.ok) {
     const text = await res.text();
-    throw new EngineError(text || res.statusText);
+    let detail = text || res.statusText;
+    try {
+      const parsed = JSON.parse(text) as { detail?: string | string[] };
+      if (parsed.detail) {
+        detail = Array.isArray(parsed.detail) ? parsed.detail.join("; ") : String(parsed.detail);
+      }
+    } catch {
+      /* use raw text */
+    }
+    throw new EngineError(detail);
   }
   return res.json() as Promise<T>;
 }
@@ -150,12 +169,33 @@ export interface TrackMappingEntry {
   song_track_ids: Record<string, string>;
 }
 
+export interface EngineSettings {
+  ai_base_url?: string;
+  ai_model?: string;
+  ai_api_key_configured?: boolean;
+  ollama_base_url?: string;
+  ollama_enabled?: boolean;
+  audio_backend?: string;
+  soundfont_path?: string;
+  midi_device?: string;
+}
+
+export interface AiTestConnectionResult {
+  ok: boolean;
+  model?: string;
+  message?: string;
+  error?: string;
+}
+
 export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
 
-  getSettings: () => request<Record<string, unknown>>("/api/settings"),
+  getSettings: () => request<EngineSettings>("/api/settings"),
   updateSettings: (body: Record<string, unknown>) =>
-    request<Record<string, unknown>>("/api/settings", { method: "POST", body: JSON.stringify(body) }),
+    request<EngineSettings>("/api/settings", { method: "POST", body: JSON.stringify(body) }),
+
+  testAiConnection: () =>
+    request<AiTestConnectionResult>("/api/ai/test-connection", { method: "POST" }),
 
   createProject: (path: string, name: string) =>
     request<{ path: string }>("/api/projects/create", {
@@ -222,18 +262,28 @@ export const api = {
     selection: Record<string, unknown>;
     constraints?: Record<string, unknown>;
     mock?: boolean;
-  }) => request<{ plan: OperationPlan; payload: Record<string, unknown> }>("/api/ai/plan", {
-    method: "POST",
-    body: JSON.stringify(body),
-  }),
+  }) =>
+    request<{ plan: OperationPlan; payload: Record<string, unknown>; mode: "live" | "mock" }>(
+      "/api/ai/plan",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
 
-  applyPlan: (projectPath: string, plan: OperationPlan, enabledOpIndices?: number[]) =>
+  applyPlan: (
+    projectPath: string,
+    plan: OperationPlan,
+    enabledOpIndices?: number[],
+    transitionId?: string,
+  ) =>
     request<{ revision: Revision; timeline: TimelineData }>("/api/ai/apply-plan", {
       method: "POST",
       body: JSON.stringify({
         project_path: projectPath,
         plan,
         enabled_op_indices: enabledOpIndices,
+        transition_id: transitionId,
       }),
     }),
 

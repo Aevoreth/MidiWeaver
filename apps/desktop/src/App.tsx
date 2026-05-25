@@ -42,6 +42,10 @@ export default function App() {
   const [transportError, setTransportError] = useState<string | null>(null);
   const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
   const [trackScopeMode, setTrackScopeMode] = useState<TrackScopeMode>("all");
+  const [aiKeyConfigured, setAiKeyConfigured] = useState(false);
+
+  const forceMockAi = import.meta.env.VITE_AI_MOCK === "true";
+  const aiMode: "live" | "mock" = forceMockAi || !aiKeyConfigured ? "mock" : "live";
 
   const ppq = timeline?.master_ppq ?? 480;
   const totalTicks = projectTotalTicks(timeline, ppq);
@@ -85,6 +89,7 @@ export default function App() {
 
   useEffect(() => {
     api.health().then(() => setEngineOk(true)).catch(() => setEngineOk(false));
+    api.getSettings().then((s) => setAiKeyConfigured(Boolean(s.ai_api_key_configured)));
     const id = window.setInterval(() => {
       api.health().then(() => setEngineOk(true)).catch(() => setEngineOk(false));
     }, 5000);
@@ -369,6 +374,7 @@ export default function App() {
 
           {sidebarTab === "ai" && projectPath && (
             <AIPlannerPanel
+              aiMode={aiMode}
               diff={lastDiff}
               onGenerate={async (prompt, constraints) => {
                 const trans = timeline?.transitions.find((t) => t.id === selectedTransitionId);
@@ -385,16 +391,21 @@ export default function App() {
                         : undefined,
                   },
                   constraints,
-                  mock: true,
+                  mock: forceMockAi,
                 });
-                return result.plan;
+                return { plan: result.plan, mode: result.mode };
               }}
               onApply={async (plan, enabledIndices, tempoIndex) => {
                 const planWithTempo = {
                   ...plan,
                   selected_tempo_option_index: tempoIndex,
                 };
-                const result = await api.applyPlan(projectPath, planWithTempo, enabledIndices);
+                const result = await api.applyPlan(
+                  projectPath,
+                  planWithTempo,
+                  enabledIndices,
+                  selectedTransitionId ?? undefined,
+                );
                 setTimeline(result.timeline);
                 setLastDiff(result.revision.diff ?? null);
                 setStatus("Applied AI plan");
@@ -545,7 +556,19 @@ export default function App() {
         onSeekStart={() => seekTo(0)}
       />
 
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsPanel
+          onClose={async () => {
+            setShowSettings(false);
+            try {
+              const s = await api.getSettings();
+              setAiKeyConfigured(Boolean(s.ai_api_key_configured));
+            } catch {
+              /* engine may be offline */
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

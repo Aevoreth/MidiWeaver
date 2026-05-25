@@ -46,6 +46,7 @@
             "extend_drums",
             "copy_notes",
             "echo_notes",
+            "shift_song",
             "insert_song",
             "transpose_region",
             "quantize_region",

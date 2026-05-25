@@ -2,7 +2,8 @@ from pathlib import Path
 
 import mido
 
-from midiweaver.ai.planner import AIPlanner
+from midiweaver.ai.planner import AIPlanner, resolve_plan
+from midiweaver.models import Operation, OperationPlan, TempoOption
 from midiweaver.audio.engine import MidiExporter
 from midiweaver.project.store import get_project
 
@@ -65,5 +66,46 @@ def test_ai_plan_mock(project_bundle):
     plan = asyncio.run(planner.plan(payload, mock=True))
     assert len(plan.tempo_options) == 3
     validated, errors = planner.validate_plan(plan.model_dump())
+    assert validated is not None
+    assert not errors
+
+
+def test_resolve_tempo_ramp_missing_ticks():
+    plan = OperationPlan(
+        plan_summary="Step tempo at song 2",
+        tempo_options=[
+            TempoOption(
+                label="Immediate step",
+                policy="step_at_boundary",
+                duration_bars=0,
+                start_bpm=120,
+                end_bpm=140,
+            )
+        ],
+        ops=[
+            Operation(
+                op_type="tempo_ramp",
+                params={},
+                description="Instant tempo at song 2",
+            )
+        ],
+    )
+    resolved = resolve_plan(
+        plan,
+        ppq=480,
+        song_segments=[
+            {"id": "song_1", "master_start_tick": 0, "master_end_tick": 7680},
+            {"id": "song_2", "master_start_tick": 7680, "master_end_tick": 15360},
+        ],
+    )
+    ramp = resolved.ops[0]
+    assert ramp.params["start_tick"] == 7680
+    assert ramp.params["end_tick"] == 7680
+    assert ramp.params["start_bpm"] == 120
+    assert ramp.params["end_bpm"] == 140
+    assert ramp.params["policy"] == "step_at_boundary"
+
+    planner = AIPlanner("", "", "test")
+    validated, errors = planner.validate_plan(resolved.model_dump())
     assert validated is not None
     assert not errors

@@ -57,6 +57,20 @@ def normalize_analysis(analysis: AnalysisSnapshot, master_ppq: int) -> AnalysisS
     return data
 
 
+def sync_segment_trim_bounds(analysis: AnalysisSnapshot) -> None:
+    """Expand trim window so playback/export includes all notes on the segment."""
+    all_notes = [n for t in analysis.tracks for n in t.notes]
+    if not all_notes:
+        return
+    min_start = min(n.start_tick for n in all_notes)
+    max_end = max(n.start_tick + n.duration_ticks for n in all_notes)
+    analysis.trim_start_tick = min(analysis.trim_start_tick, min_start)
+    if analysis.trim_end_tick is None:
+        analysis.trim_end_tick = max_end
+    else:
+        analysis.trim_end_tick = max(analysis.trim_end_tick, max_end)
+
+
 def segment_duration_ticks(analysis: AnalysisSnapshot) -> int:
     start = analysis.trim_start_tick
     end = analysis.trim_end_tick
@@ -78,9 +92,11 @@ def build_master_timeline(
     cursor = 0
     tempo_events: list[TempoEvent] = []
 
-    for seg in segments:
+    for i, seg in enumerate(segments):
         if seg.analysis is None:
             continue
+        if i > 0:
+            cursor += seg.master_start_offset_ticks
         norm = normalize_analysis(seg.analysis, master_ppq)
         duration = segment_duration_ticks(norm)
         seg_copy = seg.model_copy(

@@ -81,6 +81,8 @@ class SongSegment(BaseModel):
     source_path: str = ""
     master_start_tick: int = 0
     master_end_tick: int = 0
+    # Negative offset pulls segment earlier on the master clock (overlap with prior song).
+    master_start_offset_ticks: int = 0
     analysis: AnalysisSnapshot | None = None
     trim_start_ticks: int = 0
     trim_end_ticks: int | None = None

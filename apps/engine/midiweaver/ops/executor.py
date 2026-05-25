@@ -13,7 +13,7 @@ from midiweaver.models import (
     RevisionDiff,
     TrackData,
 )
-from midiweaver.normalize.timeline import apply_tempo_ramp, build_master_timeline
+from midiweaver.normalize.timeline import apply_tempo_ramp, build_master_timeline, sync_segment_trim_bounds
 
 
 class OpContext:
@@ -33,13 +33,48 @@ class OpExecutor:
         errors: list[str] = []
         if op.op_type not in ALLOWED_OPS:
             errors.append(f"Unknown op_type: {op.op_type}")
+            return errors
+
+        p = op.params
         if op.op_type == "tempo_ramp":
-            p = op.params
             for key in ("start_tick", "end_tick", "start_bpm", "end_bpm"):
                 if key not in p:
                     errors.append(f"tempo_ramp missing {key}")
             if p.get("start_bpm", 0) < 20 or p.get("end_bpm", 0) > 300:
                 errors.append("BPM out of bounds (20-300)")
+        elif op.op_type == "copy_notes":
+            for key in ("source_start_tick", "source_end_tick", "dest_tick"):
+                if key not in p:
+                    errors.append(f"copy_notes missing {key}")
+        elif op.op_type == "echo_notes":
+            has_region = "source_start_tick" in p and "source_end_tick" in p
+            has_track = ("track_id" in p or "master_track_id" in p) and "song_id" in p
+            if not has_region and not has_track:
+                errors.append(
+                    "echo_notes needs source_start_tick/source_end_tick or song_id with track_id"
+                )
+        elif op.op_type == "set_transition_markers":
+            has_trans = "transition_id" in p
+            has_songs = "from_song_id" in p and "to_song_id" in p
+            if not has_trans and not has_songs:
+                errors.append(
+                    "set_transition_markers missing transition_id or from_song_id/to_song_id"
+                )
+        elif op.op_type == "shift_song":
+            if "song_id" not in p:
+                errors.append("shift_song missing song_id")
+            elif "delta_ticks" not in p and "bars" not in p:
+                errors.append("shift_song missing delta_ticks or bars")
+        elif op.op_type == "manual_edit_note":
+            for key in ("song_id", "track_id"):
+                if key not in p:
+                    errors.append(f"manual_edit_note missing {key}")
+        elif op.op_type in ("transpose_region", "quantize_region"):
+            for key in ("start_tick", "end_tick"):
+                if key not in p:
+                    errors.append(f"{op.op_type} missing {key}")
+        elif op.op_type == "mute_track" and "track_id" not in p:
+            errors.append("mute_track missing track_id")
         return errors
 
     def validate_plan(self, plan: OperationPlan) -> list[str]:
@@ -172,19 +207,60 @@ def _extend_drums(ctx: OpContext, params: dict[str, Any]) -> OpContext:
     return new_ctx
 
 
+def _match_track(track: TrackData, track_ref: str) -> bool:
+    return track.track_id == track_ref or track.master_track_id == track_ref or track.name == track_ref
+
+
+def _resolve_note_region(
+    ctx: OpContext, params: dict[str, Any]
+) -> tuple[int, int, list[str]] | None:
+    """Resolve master-tick source region from explicit ticks or song_id+track_id."""
+    if "source_start_tick" in params and "source_end_tick" in params:
+        track_ids = params.get("track_ids", [])
+        if params.get("track_id"):
+            track_ids = [params["track_id"], *track_ids]
+        if params.get("master_track_id"):
+            track_ids = [params["master_track_id"], *track_ids]
+        return int(params["source_start_tick"]), int(params["source_end_tick"]), track_ids
+
+    song_id = params.get("song_id")
+    track_ref = params.get("track_id") or params.get("master_track_id")
+    if not song_id or not track_ref:
+        return None
+
+    for seg in ctx.timeline.segments:
+        if seg.id != song_id or not seg.analysis:
+            continue
+        for track in seg.analysis.tracks:
+            if not _match_track(track, track_ref) or not track.notes:
+                continue
+            offset = seg.master_start_tick - seg.analysis.trim_start_tick
+            notes = sorted(track.notes, key=lambda n: n.start_tick)
+            first = notes[0]
+            last = max(notes, key=lambda n: n.start_tick + n.duration_ticks)
+            abs_start = first.start_tick + offset
+            abs_end = last.start_tick + last.duration_ticks + offset
+            return int(abs_start), int(abs_end), [track.track_id]
+    return None
+
+
 def _copy_notes(ctx: OpContext, params: dict[str, Any]) -> OpContext:
     new_ctx = copy.deepcopy(ctx)
-    src_start = params["source_start_tick"]
-    src_end = params["source_end_tick"]
-    dest_tick = params["dest_tick"]
-    track_ids = params.get("track_ids", [])
+    region = _resolve_note_region(new_ctx, params)
+    if region is None:
+        return new_ctx
+    src_start, src_end, track_ids = region
+    dest_tick = params.get("dest_tick", src_start + int(params.get("delay_ticks", new_ctx.timeline.master_ppq)))
+    velocity_scale = float(params.get("velocity_scale", 1.0))
 
     for seg in new_ctx.timeline.segments:
         if not seg.analysis:
             continue
         offset = seg.master_start_tick - seg.analysis.trim_start_tick
         for track in seg.analysis.tracks:
-            if track_ids and track.track_id not in track_ids:
+            if track_ids and track.track_id not in track_ids and not any(
+                _match_track(track, tid) for tid in track_ids
+            ):
                 continue
             for n in list(track.notes):
                 abs_start = n.start_tick + offset
@@ -193,18 +269,81 @@ def _copy_notes(ctx: OpContext, params: dict[str, Any]) -> OpContext:
                     track.notes.append(
                         NoteEvent(
                             pitch=n.pitch,
-                            start_tick=n.start_tick + delta,
+                            start_tick=max(0, n.start_tick + delta),
                             duration_ticks=n.duration_ticks,
-                            velocity=n.velocity,
+                            velocity=max(1, min(127, int(n.velocity * velocity_scale))),
                             channel=n.channel,
                         )
                     )
+    for seg in new_ctx.timeline.segments:
+        if seg.analysis:
+            sync_segment_trim_bounds(seg.analysis)
+            seg.trim_start_ticks = seg.analysis.trim_start_tick
+            seg.trim_end_ticks = seg.analysis.trim_end_tick
     return new_ctx
 
 
 def _echo_notes(ctx: OpContext, params: dict[str, Any]) -> OpContext:
-    params = {**params, "dest_tick": params["source_start_tick"] + params.get("delay_ticks", 480)}
-    return _copy_notes(ctx, params)
+    region = _resolve_note_region(ctx, params)
+    if region is None:
+        return ctx
+
+    src_start, src_end, _ = region
+    ppq = ctx.timeline.master_ppq
+    interval = int(params.get("interval_ticks", params.get("delay_ticks", ppq)))
+    repeats = int(params.get("repeats", 1))
+    if repeats <= 1 and "bars" in params:
+        beats_per_bar = 4
+        repeats = max(1, int(float(params["bars"]) * beats_per_bar))
+    decay = float(params.get("velocity_decay", 1.0))
+
+    new_ctx = copy.deepcopy(ctx)
+    for i in range(repeats):
+        echo_params = {
+            **params,
+            "source_start_tick": src_start,
+            "source_end_tick": src_end,
+            "dest_tick": src_start + interval * (i + 1),
+            "velocity_scale": decay ** (i + 1) if decay < 1 else 1.0,
+        }
+        new_ctx = _copy_notes(new_ctx, echo_params)
+    new_ctx.timeline = build_master_timeline(
+        new_ctx.timeline.segments,
+        new_ctx.timeline.master_ppq,
+        new_ctx.timeline.transitions,
+    )
+    return new_ctx
+
+
+def _shift_song(ctx: OpContext, params: dict[str, Any]) -> OpContext:
+    new_ctx = copy.deepcopy(ctx)
+    song_id = params["song_id"]
+    ppq = new_ctx.timeline.master_ppq
+    if "delta_ticks" in params:
+        delta = int(params["delta_ticks"])
+    else:
+        delta = int(float(params.get("bars", 0)) * 4 * ppq)
+
+    for seg in new_ctx.timeline.segments:
+        if seg.id != song_id or not seg.analysis:
+            continue
+        for track in seg.analysis.tracks:
+            for n in track.notes:
+                n.start_tick = max(0, n.start_tick + delta)
+        seg.analysis.trim_start_tick = max(0, seg.analysis.trim_start_tick + delta)
+        if delta > 0 and seg.analysis.trim_end_tick is not None:
+            seg.analysis.trim_end_tick = seg.analysis.trim_end_tick + delta
+        sync_segment_trim_bounds(seg.analysis)
+        seg.trim_start_ticks = seg.analysis.trim_start_tick
+        seg.trim_end_ticks = seg.analysis.trim_end_tick
+        if delta < 0:
+            seg.master_start_offset_ticks += delta
+    new_ctx.timeline = build_master_timeline(
+        new_ctx.timeline.segments,
+        new_ctx.timeline.master_ppq,
+        new_ctx.timeline.transitions,
+    )
+    return new_ctx
 
 
 def _manual_edit_note(ctx: OpContext, params: dict[str, Any]) -> OpContext:
@@ -250,7 +389,20 @@ def _manual_edit_note(ctx: OpContext, params: dict[str, Any]) -> OpContext:
 
 def _set_transition_markers(ctx: OpContext, params: dict[str, Any]) -> OpContext:
     new_ctx = copy.deepcopy(ctx)
-    trans_id = params["transition_id"]
+    trans_id = params.get("transition_id")
+    if not trans_id and "from_song_id" in params and "to_song_id" in params:
+        match = next(
+            (
+                t
+                for t in new_ctx.timeline.transitions
+                if t.from_song_id == params["from_song_id"]
+                and t.to_song_id == params["to_song_id"]
+            ),
+            None,
+        )
+        trans_id = match.id if match else None
+    if not trans_id:
+        return new_ctx
     for trans in new_ctx.timeline.transitions:
         if trans.id == trans_id:
             trans.mix_out_bars = params.get("mix_out_bars", trans.mix_out_bars)
@@ -323,6 +475,7 @@ ALLOWED_OPS = {
     "extend_drums",
     "copy_notes",
     "echo_notes",
+    "shift_song",
     "insert_song",
     "transpose_region",
     "quantize_region",
@@ -337,6 +490,7 @@ OP_HANDLERS = {
     "extend_drums": _extend_drums,
     "copy_notes": _copy_notes,
     "echo_notes": _echo_notes,
+    "shift_song": _shift_song,
     "manual_edit_note": _manual_edit_note,
     "set_transition_markers": _set_transition_markers,
     "mute_track": _mute_track,

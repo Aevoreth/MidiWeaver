@@ -75,7 +75,27 @@ System MIDI (Microsoft GS Wavetable) works without a soundfont.
 
 ## AI settings
 
-- **OpenAI-compatible**: Settings → set base URL, API key, model. Set `VITE_AI_LIVE=true` when starting the UI to call live APIs instead of mock plans.
+MidiWeaver stores AI credentials in a local engine config file (not in `.midiweaver/` project bundles):
+
+- **Windows:** `%APPDATA%\MidiWeaver\settings.json`
+- **macOS/Linux:** XDG config dir via `platformdirs` (typically `~/.config/MidiWeaver/settings.json`)
+
+### Configure live AI
+
+1. Start the engine and UI (see Daily dev loop above).
+2. Open **Settings** → set **AI base URL**, **API key**, and **model** (OpenAI-compatible API).
+3. Click **Test connection** to verify credentials.
+4. In the **AI** sidebar tab, click **Generate plan** — live plans run when a key is configured.
+
+Without an API key, the planner uses deterministic mock plans (same offline behavior as tests).
+
+### Dev overrides
+
+| Variable | Purpose |
+|----------|---------|
+| `MIDIWEAVER_AI_API_KEY` | Set API key on engine startup (overrides saved key) |
+| `VITE_AI_MOCK=true` | Force mock plans in the UI even when a key is configured |
+
 - **Ollama**: stub only in v1 (`/api/ollama/status`).
 
 ## Tests

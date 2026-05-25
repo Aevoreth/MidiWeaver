@@ -3,14 +3,19 @@ import type { OperationPlan, TempoOption, RevisionDiff } from "@/lib/api";
 import { Button, Input, Label, Panel } from "@/components/ui/button";
 
 interface AIPlannerPanelProps {
-  onGenerate: (prompt: string, constraints: Record<string, unknown>) => Promise<OperationPlan>;
+  aiMode: "live" | "mock";
+  onGenerate: (
+    prompt: string,
+    constraints: Record<string, unknown>,
+  ) => Promise<{ plan: OperationPlan; mode: "live" | "mock" }>;
   onApply: (plan: OperationPlan, enabledIndices: number[], tempoIndex: number) => Promise<void>;
   diff: RevisionDiff | null;
 }
 
-export function AIPlannerPanel({ onGenerate, onApply, diff }: AIPlannerPanelProps) {
+export function AIPlannerPanel({ aiMode, onGenerate, onApply, diff }: AIPlannerPanelProps) {
   const [prompt, setPrompt] = useState("Create a smooth drum-heavy transition with a tempo ramp.");
   const [plan, setPlan] = useState<OperationPlan | null>(null);
+  const [planMode, setPlanMode] = useState<"live" | "mock" | null>(null);
   const [enabledOps, setEnabledOps] = useState<Set<number>>(new Set());
   const [tempoIndex, setTempoIndex] = useState(0);
   const [constraints, setConstraints] = useState({
@@ -22,14 +27,25 @@ export function AIPlannerPanel({ onGenerate, onApply, diff }: AIPlannerPanelProp
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const effectiveMode = planMode ?? aiMode;
+  const generateLabel =
+    effectiveMode === "live"
+      ? loading
+        ? "Planning…"
+        : "Generate plan"
+      : loading
+        ? "Planning…"
+        : "Generate plan (mock — no API key)";
+
   const runPlan = async () => {
     setLoading(true);
     setError(null);
     try {
       const result = await onGenerate(prompt, constraints);
-      setPlan(result);
-      setEnabledOps(new Set(result.ops.map((_, i) => i)));
-      setTempoIndex(result.selected_tempo_option_index ?? 0);
+      setPlan(result.plan);
+      setPlanMode(result.mode);
+      setEnabledOps(new Set(result.plan.ops.map((_, i) => i)));
+      setTempoIndex(result.plan.selected_tempo_option_index ?? 0);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Plan failed");
     } finally {
@@ -51,6 +67,12 @@ export function AIPlannerPanel({ onGenerate, onApply, diff }: AIPlannerPanelProp
 
   return (
     <div className="space-y-3 text-sm">
+      {aiMode === "mock" && (
+        <Panel className="text-xs text-muted">
+          No API key configured. Plans use offline mock data. Add a key in Settings to use live AI.
+        </Panel>
+      )}
+
       <div>
         <Label>Prompt</Label>
         <textarea
@@ -93,12 +115,15 @@ export function AIPlannerPanel({ onGenerate, onApply, diff }: AIPlannerPanelProp
       </Panel>
 
       <Button onClick={runPlan} disabled={loading}>
-        {loading ? "Planning…" : "Generate plan (mock AI)"}
+        {generateLabel}
       </Button>
       {error && <div className="text-error text-xs">{error}</div>}
 
       {plan && (
         <Panel className="space-y-2">
+          <div className="text-xs text-muted">
+            {effectiveMode === "live" ? "Live AI plan" : "Mock plan"}
+          </div>
           <div className="font-medium">{plan.plan_summary}</div>
 
           <div>
