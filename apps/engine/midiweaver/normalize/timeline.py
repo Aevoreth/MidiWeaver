@@ -173,7 +173,8 @@ def collect_master_notes(timeline: MasterTimeline) -> list[dict]:
                     {
                         "song_id": seg.id,
                         "track_id": track.track_id,
-                        "master_track_id": track.master_track_id or track.track_id,
+                        "master_track_id": track.master_track_id
+                        or f"{seg.id}:{track.track_id}",
                         "track_name": track.name,
                         "pitch": n.pitch,
                         "start_tick": n.start_tick + offset,

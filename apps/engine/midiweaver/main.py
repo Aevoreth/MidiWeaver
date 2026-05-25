@@ -365,11 +365,16 @@ def export_midi(body: ExportMidiRequest) -> dict[str, Any]:
 @app.post("/api/audio/render")
 def render_audio(body: RenderRequest) -> dict[str, Any]:
     store = get_project(body.project_path)
+    import json
+    from midiweaver.models import ProjectMetadata
+
+    meta = ProjectMetadata(**json.loads(store.project_json.read_text(encoding="utf-8")))
     wav = _audio.render_wav(
         store.timeline,
         body.output_path if body.format == "wav" else str(Path(body.output_path).with_suffix(".wav")),
         body.start_tick,
         body.end_tick,
+        track_mapping=meta.track_mapping,
     )
     result = {"wav": str(wav)}
     if body.format == "ogg":

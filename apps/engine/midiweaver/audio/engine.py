@@ -11,6 +11,7 @@ import mido
 import pretty_midi
 
 from midiweaver.models import ExportReport, MasterTimeline, TempoEvent
+from midiweaver.normalize.track_export import apply_export_track_mapping
 from midiweaver.normalize.timeline import collect_master_notes
 
 
@@ -415,9 +416,15 @@ class AudioEngine:
         start_tick: int = 0,
         end_tick: int | None = None,
         sample_rate: int = 44100,
+        track_mapping: list[Any] | None = None,
     ) -> Path:
         output_path = Path(output_path)
-        notes = self._filter_notes(collect_master_notes(timeline))
+        song_names = {seg.id: seg.display_name for seg in timeline.segments}
+        notes, _ = apply_export_track_mapping(
+            self._filter_notes(collect_master_notes(timeline)),
+            track_mapping,
+            song_names,
+        )
         if end_tick is None:
             end_tick = timeline.total_ticks
 
@@ -428,7 +435,7 @@ class AudioEngine:
         for n in notes:
             if n["start_tick"] < start_tick or n["start_tick"] >= end_tick:
                 continue
-            tid = n.get("master_track_id") or n.get("track_id")
+            tid = n.get("export_group_id") or n.get("master_track_id") or n.get("track_id")
             if tid not in track_map:
                 program = n.get("program")
                 if program is None and not n.get("is_drum"):
@@ -436,7 +443,7 @@ class AudioEngine:
                 inst = pretty_midi.Instrument(
                     program=program if program is not None else 0,
                     is_drum=n.get("is_drum", False),
-                    name=n.get("track_name") or tid,
+                    name=n.get("export_track_name") or n.get("track_name") or tid,
                 )
                 track_map[tid] = inst
                 pm.instruments.append(inst)
@@ -571,9 +578,13 @@ class MidiExporter:
         track_mapping: list[Any] | None = None,
     ) -> ExportReport:
         output_path = Path(output_path)
-        notes = collect_master_notes(timeline)
+        song_names = {seg.id: seg.display_name for seg in timeline.segments}
+        notes, unmapped = apply_export_track_mapping(
+            collect_master_notes(timeline),
+            track_mapping,
+            song_names,
+        )
         warnings: list[str] = []
-        unmapped: list[str] = []
         key_clashes: list[str] = []
 
         keys = [seg.analysis.key for seg in timeline.segments if seg.analysis and seg.analysis.key]
@@ -597,10 +608,10 @@ class MidiExporter:
 
         master_tracks: dict[str, mido.MidiTrack] = {}
         for n in notes:
-            mtid = n.get("master_track_id") or n.get("track_id")
+            mtid = n.get("export_group_id") or n.get("master_track_id") or n.get("track_id")
             if mtid not in master_tracks:
                 t = mido.MidiTrack()
-                display = n.get("track_name") or mtid
+                display = n.get("export_track_name") or n.get("track_name") or mtid
                 t.append(mido.MetaMessage("track_name", name=display, time=0))
                 master_tracks[mtid] = t
                 mid.tracks.append(t)
@@ -608,7 +619,7 @@ class MidiExporter:
         # Sort and emit with delta times
         by_track: dict[str, list[dict]] = {}
         for n in notes:
-            mtid = n.get("master_track_id") or n.get("track_id")
+            mtid = n.get("export_group_id") or n.get("master_track_id") or n.get("track_id")
             by_track.setdefault(mtid, []).append(n)
 
         tempo_ramps = sum(1 for _ in timeline.tempo_events)

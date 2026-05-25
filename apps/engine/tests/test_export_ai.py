@@ -3,9 +3,19 @@ from pathlib import Path
 import mido
 
 from midiweaver.ai.planner import AIPlanner, resolve_plan
-from midiweaver.models import Operation, OperationPlan, TempoOption
+from midiweaver.models import Operation, OperationPlan, TempoOption, TrackMappingEntry
 from midiweaver.audio.engine import MidiExporter
 from midiweaver.project.store import get_project
+
+
+def _track_names(mid: mido.MidiFile) -> list[str]:
+    names: list[str] = []
+    for track in mid.tracks:
+        for msg in track:
+            if msg.is_meta and msg.type == "track_name":
+                names.append(msg.name)
+                break
+    return names
 
 
 def test_export_type1(project_bundle, tmp_path):
@@ -18,6 +28,52 @@ def test_export_type1(project_bundle, tmp_path):
     assert report.track_count >= 1
 
 
+def test_export_no_auto_merge_by_track_index(project_bundle, tmp_path):
+    store = get_project(str(project_bundle))
+    out = tmp_path / "merged.mid"
+    report = MidiExporter().export_type1(store.timeline, out)
+    exported = mido.MidiFile(str(out))
+
+    # Two songs × (Drums + Melody) = 4 instrument tracks, not 2 merged by index.
+    assert report.track_count == 4
+    names = _track_names(exported)
+    assert sum(1 for n in names if n.endswith("/ Drums")) == 2
+    assert sum(1 for n in names if n.endswith("/ Melody")) == 2
+
+
+def test_export_track_mapping_merges_linked_tracks(project_bundle, tmp_path):
+    store = get_project(str(project_bundle))
+    segments = store.timeline.segments
+    assert len(segments) == 2
+
+    drums_a = next(t.track_id for t in segments[0].analysis.tracks if t.name == "Drums")
+    drums_b = next(t.track_id for t in segments[1].analysis.tracks if t.name == "Drums")
+    melody_a = next(t.track_id for t in segments[0].analysis.tracks if t.name == "Melody")
+    melody_b = next(t.track_id for t in segments[1].analysis.tracks if t.name == "Melody")
+
+    mapping = [
+        TrackMappingEntry(
+            master_track_id="drums",
+            role="Drums",
+            song_track_ids={segments[0].id: drums_a, segments[1].id: drums_b},
+        ),
+        TrackMappingEntry(
+            master_track_id="melody",
+            role="Melody",
+            song_track_ids={segments[0].id: melody_a, segments[1].id: melody_b},
+        ),
+    ]
+
+    out = tmp_path / "merged.mid"
+    report = MidiExporter().export_type1(store.timeline, out, mapping)
+    exported = mido.MidiFile(str(out))
+
+    assert report.track_count == 2
+    names = _track_names(exported)
+    assert names.count("Drums") == 1
+    assert names.count("Melody") == 1
+
+
 def test_export_preserves_program_and_timing(project_bundle, tmp_path):
     store = get_project(str(project_bundle))
     out = tmp_path / "merged.mid"
@@ -25,7 +81,11 @@ def test_export_preserves_program_and_timing(project_bundle, tmp_path):
 
     exported = mido.MidiFile(str(out))
     melody_track = next(
-        (t for t in exported.tracks if any(m.type == "track_name" and m.name == "Melody" for m in t if m.is_meta)),
+        (
+            t
+            for t in exported.tracks
+            if any(m.type == "track_name" and m.name.endswith("/ Melody") for m in t if m.is_meta)
+        ),
         None,
     )
     assert melody_track is not None

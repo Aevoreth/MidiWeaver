@@ -15,7 +15,7 @@ import {
   type TimelineData,
   type TrackMappingEntry,
 } from "@/lib/api";
-import { MASTER_ROLES, mixerTrackId } from "@/lib/utils";
+import { mixerTrackId } from "@/lib/utils";
 import { Button, Badge } from "@/components/ui/button";
 import { MasterTimeline } from "@/features/timeline/MasterTimeline";
 import { PianoRoll, type TrackScopeMode } from "@/features/timeline/PianoRoll";
@@ -23,6 +23,7 @@ import { getTransitionTickRange, projectTotalTicks, tickRangeToBarRange } from "
 import { useTimelineViewport } from "@/features/timeline/useTimelineViewport";
 import { TransportBar } from "@/features/transport/TransportBar";
 import { AIPlannerPanel } from "@/features/ai-planner/AIPlannerPanel";
+import { TrackMappingPanel } from "@/features/mapping/TrackMappingPanel";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
 
 export default function App() {
@@ -184,6 +185,8 @@ export default function App() {
     const data = await api.openProject(path);
     setProjectPath(path);
     setTimeline(data.timeline);
+    const mapping = (data.meta.track_mapping as TrackMappingEntry[] | undefined) ?? [];
+    setTrackMapping(mapping);
     setStatus(`Opened ${path}`);
   };
 
@@ -317,59 +320,17 @@ export default function App() {
           )}
 
           {sidebarTab === "mapping" && (
-            <div className="space-y-2 text-xs overflow-auto">
-              {MASTER_ROLES.map((role) => {
-                const entry = trackMapping.find((m) => m.role === role);
-                return (
-                  <div key={role} className="rounded border border-border p-2">
-                    <div className="font-medium mb-1">{role}</div>
-                    {timeline?.segments.map((seg) => (
-                      <label key={seg.id} className="flex flex-col gap-0.5 mb-1">
-                        <span className="text-muted">{seg.display_name}</span>
-                        <select
-                          className="rounded border border-border bg-surface px-1 py-0.5"
-                          value={entry?.song_track_ids[seg.id] ?? ""}
-                          onChange={(e) => {
-                            const next = [...trackMapping];
-                            let row = next.find((m) => m.role === role);
-                            if (!row) {
-                              row = {
-                                master_track_id: role.toLowerCase(),
-                                role,
-                                song_track_ids: {},
-                              };
-                              next.push(row);
-                            }
-                            if (e.target.value) row.song_track_ids[seg.id] = e.target.value;
-                            else delete row.song_track_ids[seg.id];
-                            setTrackMapping(next);
-                          }}
-                        >
-                          <option value="">—</option>
-                          {seg.analysis?.tracks.map((t) => (
-                            <option key={t.track_id} value={t.track_id}>
-                              {t.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    ))}
-                  </div>
-                );
-              })}
-              <Button
-                size="sm"
-                className="w-full"
-                disabled={!projectPath}
-                onClick={async () => {
-                  if (!projectPath) return;
-                  await api.updateTrackMapping(projectPath, trackMapping);
-                  setStatus("Track mapping saved");
-                }}
-              >
-                Save mapping
-              </Button>
-            </div>
+            <TrackMappingPanel
+              timeline={timeline}
+              trackMapping={trackMapping}
+              onChange={setTrackMapping}
+              disabled={!projectPath}
+              onSave={async () => {
+                if (!projectPath) return;
+                await api.updateTrackMapping(projectPath, trackMapping);
+                setStatus("Track mapping saved");
+              }}
+            />
           )}
 
           {sidebarTab === "ai" && projectPath && (
