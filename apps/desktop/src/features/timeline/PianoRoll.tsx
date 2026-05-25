@@ -16,6 +16,7 @@ interface PianoRollProps {
   pxPerTick: number;
   scrollStartTick: number;
   editRange: TickRange;
+  transitionRange: TickRange | null;
   selectedTrackIds: Set<string>;
   trackScopeMode: TrackScopeMode;
   onToggleTrack: (trackId: string) => void;
@@ -32,6 +33,7 @@ const LANE_HEIGHT = 60;
 const NOTE_HIT_HEIGHT = 6;
 const NOTE_LINE_WIDTH = 2;
 const LABEL_WIDTH = 280;
+const CONTEXT_RULER_HEIGHT = 20;
 
 interface TrackLane {
   songId: string;
@@ -55,6 +57,84 @@ function yToPitch(y: number, lane: TrackLane): number {
   return Math.round(lane.pitchMax - norm * range);
 }
 
+function drawRangeFill(
+  ctx: CanvasRenderingContext2D,
+  startTick: number,
+  endTick: number,
+  drawStartTick: number,
+  viewportWidth: number,
+  lanesTop: number,
+  height: number,
+  pxPerTick: number,
+  fill: string,
+) {
+  const startX = (startTick - drawStartTick) * pxPerTick;
+  const endX = (endTick - drawStartTick) * pxPerTick;
+  if (endX <= 0 || startX >= viewportWidth) return;
+
+  const left = Math.max(0, startX);
+  const right = Math.min(viewportWidth, endX);
+  const width = right - left;
+  if (width <= 0) return;
+
+  ctx.fillStyle = fill;
+  ctx.fillRect(left, lanesTop, width, height - lanesTop);
+}
+
+function drawRangeBoundary(
+  ctx: CanvasRenderingContext2D,
+  tick: number,
+  drawStartTick: number,
+  viewportWidth: number,
+  height: number,
+  pxPerTick: number,
+  color: string,
+  label: string,
+  dashed: boolean,
+  align: "start" | "end",
+) {
+  const x = (tick - drawStartTick) * pxPerTick;
+  const inView = x >= -1 && x <= viewportWidth + 1;
+
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 2;
+  ctx.setLineDash(dashed ? [5, 4] : []);
+  ctx.font = "10px Segoe UI, system-ui, sans-serif";
+
+  if (inView) {
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, 0);
+    ctx.lineTo(x + 0.5, height);
+    ctx.stroke();
+
+    ctx.fillRect(x - (align === "start" ? 0 : 2), 0, 2, CONTEXT_RULER_HEIGHT);
+
+    const textW = ctx.measureText(label).width;
+    const textX = align === "start" ? Math.min(x + 4, viewportWidth - textW - 2) : Math.max(x - textW - 4, 2);
+    ctx.fillStyle = color;
+    ctx.fillText(label, textX, 13);
+  } else {
+    const onLeft = x < 0;
+    const edgeX = onLeft ? 6 : viewportWidth - 6;
+    ctx.beginPath();
+    ctx.moveTo(edgeX, CONTEXT_RULER_HEIGHT / 2);
+    ctx.lineTo(edgeX + (onLeft ? 6 : -6), CONTEXT_RULER_HEIGHT / 2 - 5);
+    ctx.lineTo(edgeX + (onLeft ? 6 : -6), CONTEXT_RULER_HEIGHT / 2 + 5);
+    ctx.closePath();
+    ctx.fill();
+
+    const shortLabel = align === "start" ? "◂ " : "";
+    const shortLabelEnd = align === "end" ? " ▸" : "";
+    const text = `${shortLabel}${label}${shortLabelEnd}`;
+    const textW = ctx.measureText(text).width;
+    const textX = onLeft ? 14 : viewportWidth - textW - 14;
+    ctx.fillText(text, textX, 13);
+  }
+
+  ctx.setLineDash([]);
+}
+
 export function PianoRoll({
   timeline,
   totalTicks,
@@ -65,6 +145,7 @@ export function PianoRoll({
   pxPerTick,
   scrollStartTick,
   editRange,
+  transitionRange,
   selectedTrackIds,
   trackScopeMode,
   onToggleTrack,
@@ -228,24 +309,22 @@ export function PianoRoll({
 
     const drawStartTick = getScrollStartTick();
     const drawEndTick = drawStartTick + viewportWidth / pxPerTick;
-    const height = Math.max(LANE_HEIGHT, lanes.length * LANE_HEIGHT);
+    const lanesHeight = Math.max(LANE_HEIGHT, lanes.length * LANE_HEIGHT);
+    const lanesTop = CONTEXT_RULER_HEIGHT;
+    const height = lanesTop + lanesHeight;
     canvas.width = viewportWidth;
     canvas.height = height;
 
     ctx.fillStyle = "#1e1f23";
     ctx.fillRect(0, 0, viewportWidth, height);
 
-    const editStartX = (editRange.startTick - drawStartTick) * pxPerTick;
-    const editEndX = (editRange.endTick - drawStartTick) * pxPerTick;
-    if (editEndX > 0 && editStartX < viewportWidth) {
-      ctx.fillStyle = "rgba(77, 171, 154, 0.08)";
-      ctx.fillRect(
-        Math.max(0, editStartX),
-        0,
-        Math.min(viewportWidth, editEndX) - Math.max(0, editStartX),
-        height,
-      );
-    }
+    ctx.fillStyle = "#25262b";
+    ctx.fillRect(0, 0, viewportWidth, lanesTop);
+    ctx.strokeStyle = "#373a40";
+    ctx.beginPath();
+    ctx.moveTo(0, lanesTop - 0.5);
+    ctx.lineTo(viewportWidth, lanesTop - 0.5);
+    ctx.stroke();
 
     const gridStep = snap === "bar" ? ppq * 4 : snap === "beat" ? ppq : ppq / 4;
     const firstGrid = Math.floor(drawStartTick / gridStep) * gridStep;
@@ -255,13 +334,13 @@ export function PianoRoll({
       const x = (tick - drawStartTick) * pxPerTick;
       if (x < -1 || x > viewportWidth + 1) continue;
       ctx.beginPath();
-      ctx.moveTo(x, 0);
+      ctx.moveTo(x, lanesTop);
       ctx.lineTo(x, height);
       ctx.stroke();
     }
 
     lanes.forEach((lane, laneIndex) => {
-      const laneTop = laneIndex * LANE_HEIGHT;
+      const laneTop = lanesTop + laneIndex * LANE_HEIGHT;
       const inScope = isLaneInScope(lane.mixerId);
       const trackSelected = selectedTrackIds.has(lane.mixerId);
       ctx.fillStyle =
@@ -279,8 +358,37 @@ export function PianoRoll({
       ctx.moveTo(0, laneTop + LANE_HEIGHT - 0.5);
       ctx.lineTo(viewportWidth, laneTop + LANE_HEIGHT - 0.5);
       ctx.stroke();
+    });
 
-      if (!inScope) return;
+    if (transitionRange) {
+      drawRangeFill(
+        ctx,
+        transitionRange.startTick,
+        transitionRange.endTick,
+        drawStartTick,
+        viewportWidth,
+        lanesTop,
+        height,
+        pxPerTick,
+        "rgba(232, 168, 56, 0.1)",
+      );
+    }
+
+    drawRangeFill(
+      ctx,
+      editRange.startTick,
+      editRange.endTick,
+      drawStartTick,
+      viewportWidth,
+      lanesTop,
+      height,
+      pxPerTick,
+      "rgba(77, 171, 154, 0.12)",
+    );
+
+    lanes.forEach((lane, laneIndex) => {
+      const laneTop = lanesTop + laneIndex * LANE_HEIGHT;
+      if (!isLaneInScope(lane.mixerId)) return;
 
       lane.track.notes.forEach((note, index) => {
         const absStart = note.start_tick + lane.offset;
@@ -308,6 +416,85 @@ export function PianoRoll({
       });
     });
 
+    if (transitionRange) {
+      drawRangeBoundary(
+        ctx,
+        transitionRange.startTick,
+        drawStartTick,
+        viewportWidth,
+        height,
+        pxPerTick,
+        "#e8a838",
+        "Transition start",
+        true,
+        "start",
+      );
+      drawRangeBoundary(
+        ctx,
+        transitionRange.endTick,
+        drawStartTick,
+        viewportWidth,
+        height,
+        pxPerTick,
+        "#e8a838",
+        "Transition end",
+        true,
+        "end",
+      );
+    }
+
+    drawRangeBoundary(
+      ctx,
+      editRange.startTick,
+      drawStartTick,
+      viewportWidth,
+      height,
+      pxPerTick,
+      "#4dab9a",
+      "Edit start",
+      false,
+      "start",
+    );
+    drawRangeBoundary(
+      ctx,
+      editRange.endTick,
+      drawStartTick,
+      viewportWidth,
+      height,
+      pxPerTick,
+      "#4dab9a",
+      "Edit end",
+      false,
+      "end",
+    );
+
+    // Re-draw boundary lines on top of fills for crisp edges.
+    if (transitionRange) {
+      for (const tick of [transitionRange.startTick, transitionRange.endTick]) {
+        const x = (tick - drawStartTick) * pxPerTick;
+        if (x < -1 || x > viewportWidth + 1) continue;
+        ctx.strokeStyle = "#e8a838";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, lanesTop);
+        ctx.lineTo(x + 0.5, height);
+        ctx.stroke();
+      }
+    }
+    for (const tick of [editRange.startTick, editRange.endTick]) {
+      const x = (tick - drawStartTick) * pxPerTick;
+      if (x < -1 || x > viewportWidth + 1) continue;
+      ctx.strokeStyle = "#4dab9a";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, lanesTop);
+      ctx.lineTo(x + 0.5, height);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
     const ph = (playheadTick - drawStartTick) * pxPerTick;
     if (ph >= -2 && ph <= viewportWidth + 2) {
       ctx.strokeStyle = "#e8a838";
@@ -324,6 +511,7 @@ export function PianoRoll({
     scrollStartTick,
     getScrollStartTick,
     editRange,
+    transitionRange,
     playheadTick,
     snap,
     ppq,
@@ -341,9 +529,10 @@ export function PianoRoll({
   }, [draw]);
 
   const laneAtY = (y: number) => {
-    const index = Math.floor(y / LANE_HEIGHT);
+    if (y < CONTEXT_RULER_HEIGHT) return null;
+    const index = Math.floor((y - CONTEXT_RULER_HEIGHT) / LANE_HEIGHT);
     if (index < 0 || index >= lanes.length) return null;
-    return { lane: lanes[index], laneIndex: index, localY: y - index * LANE_HEIGHT };
+    return { lane: lanes[index], laneIndex: index, localY: y - CONTEXT_RULER_HEIGHT - index * LANE_HEIGHT };
   };
 
   const hitTest = (clientX: number, clientY: number) => {
@@ -353,6 +542,11 @@ export function PianoRoll({
     const x = clientX - rect.left;
     const y = clientY - rect.top;
     const tick = getScrollStartTick() + x / pxPerTick;
+
+    if (y < CONTEXT_RULER_HEIGHT) {
+      return { tick, lane: null as TrackLane | null };
+    }
+
     const hitLane = laneAtY(y);
     if (!hitLane) return null;
 
@@ -456,7 +650,7 @@ export function PianoRoll({
           ?.analysis?.tracks.find((t) => t.track_id === selected.trackId)?.notes[selected.index] ?? null
       : null;
 
-  const canvasHeight = Math.max(LANE_HEIGHT, lanes.length * LANE_HEIGHT);
+  const canvasHeight = CONTEXT_RULER_HEIGHT + Math.max(LANE_HEIGHT, lanes.length * LANE_HEIGHT);
 
   return (
     <div className="flex h-full flex-col gap-2">
@@ -472,6 +666,16 @@ export function PianoRoll({
           </button>
         ))}
         <span className="text-muted">Ctrl+wheel to zoom · scroll to navigate</span>
+        <div className="flex items-center gap-3 border-l border-border pl-2 text-muted">
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm border border-dashed border-playhead/80 bg-playhead/15" />
+            Transition
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm border border-edit-range/70 bg-edit-range/25" />
+            Edit
+          </span>
+        </div>
         <div className="flex items-center gap-1 border-l border-border pl-2">
           <span className="text-muted">Tracks:</span>
           {(["all", "selected"] as TrackScopeMode[]).map((m) => (
@@ -513,6 +717,12 @@ export function PianoRoll({
           style={{ width: LABEL_WIDTH }}
           onScroll={() => syncVerticalScroll("labels")}
         >
+          <div
+            className="flex items-center border-b border-border px-2 text-[10px] text-muted"
+            style={{ height: CONTEXT_RULER_HEIGHT }}
+          >
+            Context
+          </div>
           {lanes.length === 0 ? (
             <div className="p-3 text-muted">No tracks</div>
           ) : (

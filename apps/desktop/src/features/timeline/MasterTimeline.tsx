@@ -44,11 +44,13 @@ interface MasterTimelineProps {
 const LABEL_WIDTH = 80;
 const ROW_GAP = 4;
 const ROW_SEGMENTS = 32;
-const ROW_VIEW = 18;
-const ROW_TRANS = 18;
-const ROW_EDIT = 18;
+const ROW_VIEW = 16;
+const ROW_TRANS = 16;
+const ROW_EDIT = 16;
 const CONTENT_HEIGHT = ROW_SEGMENTS + ROW_VIEW + ROW_TRANS + ROW_EDIT + ROW_GAP * 3;
 const TOTAL_HEIGHT = CONTENT_HEIGHT + 8;
+const SCROLLBAR_GUTTER = 12;
+const PANEL_HEIGHT = TOTAL_HEIGHT + SCROLLBAR_GUTTER;
 
 const ROW_LAYOUT: { id: TimelineRow; top: number; height: number; label: string; hint: string }[] = [
   { id: "songs", top: 4, height: ROW_SEGMENTS, label: "Songs", hint: "Click to move playhead" },
@@ -76,7 +78,7 @@ const ROW_LAYOUT: { id: TimelineRow; top: number; height: number; label: string;
 ];
 
 function rangeWidthPx(tickToContentX: (tick: number) => number, range: TickRange): number {
-  return Math.max(HANDLE_WIDTH_PX * 2, tickToContentX(range.endTick - range.startTick));
+  return Math.max(HANDLE_WIDTH_PX * 2 + 4, tickToContentX(range.endTick - range.startTick));
 }
 
 interface RangeBarProps {
@@ -89,6 +91,13 @@ interface RangeBarProps {
   variant: "view" | "trans" | "edit";
   title: string;
   dashed?: boolean;
+  dimmed?: boolean;
+  onResizeStart: (edge: "start" | "end", e: React.PointerEvent) => void;
+  onPanStart: (e: React.PointerEvent) => void;
+  onSelect?: (e: React.PointerEvent) => void;
+  onPointerMove?: (e: React.PointerEvent) => void;
+  onPointerUp?: (e: React.PointerEvent) => void;
+  onPointerCancel?: (e: React.PointerEvent) => void;
 }
 
 function RangeBar({
@@ -101,53 +110,93 @@ function RangeBar({
   variant,
   title,
   dashed,
+  dimmed,
+  onResizeStart,
+  onPanStart,
+  onSelect,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
 }: RangeBarProps) {
   const styles = {
     view: {
       bar: "border-2 border-accent/80 bg-accent/10",
-      handle: "bg-accent shadow-[0_0_0_1px_rgba(0,0,0,0.35)] hover:bg-accent/90",
+      handle: "bg-accent hover:bg-accent/90",
       glow: "var(--color-accent)",
     },
     trans: {
-      bar: "border-2 border-dashed border-playhead/80 bg-playhead/12",
-      handle: "bg-playhead shadow-[0_0_0_1px_rgba(0,0,0,0.35)] hover:bg-playhead/90",
+      bar: dashed
+        ? "border-2 border-dashed border-playhead/80 bg-playhead/12"
+        : "border-2 border-playhead/60 bg-playhead/8",
+      handle: "bg-playhead hover:bg-playhead/90",
       glow: "var(--color-playhead)",
     },
     edit: {
       bar: "border-2 border-edit-range/70 bg-edit-range/30",
-      handle: "bg-edit-range shadow-[0_0_0_1px_rgba(0,0,0,0.35)] hover:bg-edit-range/90",
+      handle: "bg-edit-range hover:bg-edit-range/90",
       glow: "var(--color-edit-range)",
     },
   }[variant];
 
   const left = tickToContentX(range.startTick);
   const barWidth = rangeWidthPx(tickToContentX, range);
-  const handleH = Math.min(height + 8, 26);
+  const handleH = Math.min(height + 6, 22);
+
+  const begin = (e: React.PointerEvent, fn: (e: React.PointerEvent) => void) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fn(e);
+  };
+
+  const dragProps = { onPointerMove, onPointerUp, onPointerCancel };
 
   return (
-    <div className="absolute left-0" style={{ top, height, width }}>
+    <div className="absolute left-0" style={{ top, height, width, pointerEvents: "none" }}>
       <div
-        className={`absolute rounded-md ${styles.bar}`}
-        style={{
-          left,
-          width: barWidth,
-          height,
-          boxShadow: active ? `0 0 0 2px ${styles.glow}` : undefined,
-        }}
+        className={`absolute touch-none ${dimmed ? "opacity-45" : "opacity-100"}`}
+        style={{ left, width: barWidth, height, pointerEvents: "auto" }}
         title={title}
       >
         <div
-          className={`absolute top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-full ${styles.handle}`}
-          style={{ left: 0, width: HANDLE_WIDTH_PX, height: handleH }}
-        />
-        <div
-          className={`absolute top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-full ${styles.handle}`}
-          style={{ left: "100%", width: HANDLE_WIDTH_PX, height: handleH }}
-        />
-        <div
-          className={`absolute inset-x-0 inset-y-0 ${dashed ? "cursor-grab active:cursor-grabbing" : "cursor-grab active:cursor-grabbing"}`}
-          style={{ marginInline: HANDLE_WIDTH_PX / 2 }}
-        />
+          className={`absolute rounded-md ${styles.bar}`}
+          style={{
+            inset: 0,
+            boxShadow: active ? `0 0 0 2px ${styles.glow}` : undefined,
+          }}
+        >
+          <div
+            className={`absolute top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-full ring-1 ring-black/30 ${styles.handle}`}
+            style={{ left: 0, width: HANDLE_WIDTH_PX, height: handleH }}
+            onPointerDown={(e) => begin(e, (ev) => onResizeStart("start", ev))}
+            {...dragProps}
+          />
+          <div
+            className={`absolute top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-full ring-1 ring-black/30 ${styles.handle}`}
+            style={{ left: "100%", width: HANDLE_WIDTH_PX, height: handleH }}
+            onPointerDown={(e) => begin(e, (ev) => onResizeStart("end", ev))}
+            {...dragProps}
+          />
+          <div
+            className="absolute z-10 cursor-grab active:cursor-grabbing"
+            style={{
+              top: 0,
+              bottom: 0,
+              left: HANDLE_WIDTH_PX / 2,
+              right: HANDLE_WIDTH_PX / 2,
+            }}
+            onPointerDown={(e) => begin(e, onPanStart)}
+            {...dragProps}
+          />
+        </div>
+        {onSelect && dimmed && (
+          <button
+            type="button"
+            className="absolute inset-0 z-0 cursor-pointer"
+            aria-label={title}
+            onPointerDown={(e) => begin(e, onSelect)}
+            {...dragProps}
+          />
+        )}
       </div>
     </div>
   );
@@ -169,6 +218,7 @@ export function MasterTimeline({
 }: MasterTimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const overviewZoomRef = useRef(1);
   const metricsRef = useRef({ minPxPerTick: 0, totalTicks: 0 });
   const lastTotalTicksRef = useRef(0);
@@ -182,6 +232,7 @@ export function MasterTimeline({
     origEdit: TickRange;
     origTrans: TickRange | null;
     origPlayhead: number;
+    transitionId?: string;
     pendingMixOut?: number;
     pendingMixIn?: number;
   } | null>(null);
@@ -239,13 +290,6 @@ export function MasterTimeline({
     return clientX - rect.left + el.scrollLeft;
   }, []);
 
-  const clientYToContentY = useCallback((clientY: number) => {
-    const el = scrollRef.current;
-    if (!el) return 0;
-    const rect = el.getBoundingClientRect();
-    return clientY - rect.top;
-  }, []);
-
   const clientXToTick = useCallback(
     (clientX: number) => {
       if (overviewPxPerTick <= 0) return 0;
@@ -256,25 +300,6 @@ export function MasterTimeline({
 
   const tickToContentX = useCallback(
     (tick: number) => tick * overviewPxPerTick,
-    [overviewPxPerTick],
-  );
-
-  const getRowAtY = useCallback((contentY: number): TimelineRow | null => {
-    for (const row of ROW_LAYOUT) {
-      if (contentY >= row.top && contentY <= row.top + row.height) return row.id;
-    }
-    return null;
-  }, []);
-
-  const nearHandle = useCallback(
-    (x: number, tick: number) => Math.abs(x - tickToContentX(tick)) <= HANDLE_WIDTH_PX / 2,
-    [tickToContentX],
-  );
-
-  const inRangeBody = useCallback(
-    (tick: number, range: TickRange) =>
-      tick > range.startTick + (HANDLE_WIDTH_PX / 2 / overviewPxPerTick) &&
-      tick < range.endTick - (HANDLE_WIDTH_PX / 2 / overviewPxPerTick),
     [overviewPxPerTick],
   );
 
@@ -319,61 +344,11 @@ export function MasterTimeline({
     return () => root.removeEventListener("wheel", onWheel, { capture: true });
   }, [timeline]);
 
-  const hitTest = useCallback(
-    (clientX: number, clientY: number): DragTarget => {
-      if (!scrollRef.current || overviewPxPerTick <= 0) return null;
-      const x = clientXToContentX(clientX);
-      const y = clientYToContentY(clientY);
-      const row = getRowAtY(y);
-      const tick = x / overviewPxPerTick;
-
-      if (row === "songs") {
-        if (nearHandle(x, displayPlayheadTick)) return "playhead";
-        return null;
-      }
-
-      if (row === "view") {
-        if (nearHandle(x, viewRange.startTick)) return "view-start";
-        if (nearHandle(x, viewRange.endTick)) return "view-end";
-        if (inRangeBody(tick, viewRange)) return "view-pan";
-        return null;
-      }
-
-      if (row === "trans" && selectedTransitionId && displayTransitionRange) {
-        if (nearHandle(x, displayTransitionRange.startTick)) return "trans-start";
-        if (nearHandle(x, displayTransitionRange.endTick)) return "trans-end";
-        if (inRangeBody(tick, displayTransitionRange)) return "trans-pan";
-        return null;
-      }
-
-      if (row === "edit") {
-        if (nearHandle(x, editRange.startTick)) return "edit-start";
-        if (nearHandle(x, editRange.endTick)) return "edit-end";
-        if (inRangeBody(tick, editRange)) return "edit-pan";
-        return null;
-      }
-
-      return null;
-    },
-    [
-      overviewPxPerTick,
-      clientXToContentX,
-      clientYToContentY,
-      getRowAtY,
-      nearHandle,
-      inRangeBody,
-      displayPlayheadTick,
-      selectedTransitionId,
-      displayTransitionRange,
-      editRange,
-      viewRange,
-    ],
-  );
-
   const commitTransitionRange = useCallback(
-    (nextRange: TickRange) => {
-      if (!timeline || !selectedTransitionId) return;
-      const trans = timeline.transitions.find((t) => t.id === selectedTransitionId);
+    (nextRange: TickRange, transitionId?: string) => {
+      const transId = transitionId ?? dragRef.current?.transitionId ?? selectedTransitionId;
+      if (!timeline || !transId) return;
+      const trans = timeline.transitions.find((t) => t.id === transId);
       if (!trans) return;
       const mixOut = mixOutBarsFromTick(timeline, trans, nextRange.startTick);
       const mixIn = mixInBarsFromTick(timeline, trans, nextRange.endTick);
@@ -386,11 +361,10 @@ export function MasterTimeline({
     [timeline, selectedTransitionId],
   );
 
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (!timeline || overviewPxPerTick <= 0) return;
-    const target = hitTest(e.clientX, e.clientY);
-    if (target) {
-      e.currentTarget.setPointerCapture(e.pointerId);
+  const beginDrag = useCallback(
+    (target: Exclude<DragTarget, null>, e: React.PointerEvent) => {
+      if (!timeline || overviewPxPerTick <= 0) return;
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       dragRef.current = {
         target,
         startX: e.clientX,
@@ -403,131 +377,189 @@ export function MasterTimeline({
       if (target.startsWith("view")) setActiveLayer("view");
       else if (target.startsWith("edit")) setActiveLayer("edit");
       else if (target.startsWith("trans")) setActiveLayer("trans");
+    },
+    [timeline, overviewPxPerTick, viewRange, editRange, displayTransitionRange, displayPlayheadTick],
+  );
+
+  const beginTransitionDrag = useCallback(
+    (target: "trans-start" | "trans-end" | "trans-pan", transId: string, e: React.PointerEvent) => {
+      if (!timeline) return;
+      const trans = timeline.transitions.find((t) => t.id === transId);
+      if (!trans) return;
+      const range = getTransitionTickRange(timeline, trans);
+      if (!range) return;
+      if (selectedTransitionId !== transId) {
+        onSelectTransition(transId);
+      }
+      if (!overviewPxPerTick) return;
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      dragRef.current = {
+        target,
+        startX: e.clientX,
+        origView: { ...viewRange },
+        origEdit: { ...editRange },
+        origTrans: { ...range },
+        origPlayhead: displayPlayheadTick,
+        transitionId: transId,
+      };
+      setActiveDragTarget(target);
+      setActiveLayer("trans");
+    },
+    [
+      timeline,
+      selectedTransitionId,
+      onSelectTransition,
+      overviewPxPerTick,
+      viewRange,
+      editRange,
+      displayPlayheadTick,
+    ],
+  );
+
+  const onDragMove = useCallback(
+    (e: React.PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag || !timeline || overviewPxPerTick <= 0) return;
+      e.preventDefault();
+      const deltaTick = (e.clientX - drag.startX) / overviewPxPerTick;
+
+      switch (drag.target) {
+        case "playhead":
+          setPlayheadPreview(snapTickLocal(drag.origPlayhead + deltaTick));
+          break;
+        case "view-start":
+          onViewRangeChange({
+            startTick: snapTickLocal(drag.origView.startTick + deltaTick),
+            endTick: drag.origView.endTick,
+          });
+          break;
+        case "view-end":
+          onViewRangeChange({
+            startTick: drag.origView.startTick,
+            endTick: snapTickLocal(drag.origView.endTick + deltaTick),
+          });
+          break;
+        case "view-pan": {
+          const span = drag.origView.endTick - drag.origView.startTick;
+          onViewRangeChange({
+            startTick: snapTickLocal(drag.origView.startTick + deltaTick),
+            endTick: snapTickLocal(drag.origView.startTick + deltaTick) + span,
+          });
+          break;
+        }
+        case "edit-start":
+          onEditRangeChange({
+            startTick: snapTickLocal(drag.origEdit.startTick + deltaTick),
+            endTick: drag.origEdit.endTick,
+          });
+          break;
+        case "edit-end":
+          onEditRangeChange({
+            startTick: drag.origEdit.startTick,
+            endTick: snapTickLocal(drag.origEdit.endTick + deltaTick),
+          });
+          break;
+        case "edit-pan": {
+          const span = drag.origEdit.endTick - drag.origEdit.startTick;
+          onEditRangeChange({
+            startTick: snapTickLocal(drag.origEdit.startTick + deltaTick),
+            endTick: snapTickLocal(drag.origEdit.startTick + deltaTick) + span,
+          });
+          break;
+        }
+        case "trans-start":
+        case "trans-end": {
+          if (!drag.origTrans) break;
+          const nextRange =
+            drag.target === "trans-start"
+              ? {
+                  startTick: snapTickLocal(drag.origTrans.startTick + deltaTick),
+                  endTick: drag.origTrans.endTick,
+                }
+              : {
+                  startTick: drag.origTrans.startTick,
+                  endTick: snapTickLocal(drag.origTrans.endTick + deltaTick),
+                };
+          commitTransitionRange(nextRange, drag.transitionId);
+          break;
+        }
+        case "trans-pan": {
+          if (!drag.origTrans) break;
+          commitTransitionRange(
+            {
+              startTick: snapTickLocal(drag.origTrans.startTick + deltaTick),
+              endTick: snapTickLocal(drag.origTrans.endTick + deltaTick),
+            },
+            drag.transitionId,
+          );
+          break;
+        }
+        default:
+          break;
+      }
+    },
+    [
+      timeline,
+      overviewPxPerTick,
+      snapTickLocal,
+      onViewRangeChange,
+      onEditRangeChange,
+      selectedTransitionId,
+      commitTransitionRange,
+    ],
+  );
+
+  const endDrag = useCallback(
+    (e: React.PointerEvent) => {
+      const drag = dragRef.current;
+      if (drag?.target === "playhead" && overviewPxPerTick > 0) {
+        const deltaTick = (e.clientX - drag.startX) / overviewPxPerTick;
+        onSeek(snapTickLocal(drag.origPlayhead + deltaTick));
+      }
+      if (
+        drag &&
+        (drag.target === "trans-start" ||
+          drag.target === "trans-end" ||
+          drag.target === "trans-pan") &&
+        drag.pendingMixOut != null &&
+        drag.pendingMixIn != null
+      ) {
+        onTransitionMarkersCommit(drag.pendingMixOut, drag.pendingMixIn);
+      }
+      setPlayheadPreview(null);
+      setTransPreview(null);
+      dragRef.current = null;
+      setActiveLayer(null);
+      setActiveDragTarget(null);
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    },
+    [overviewPxPerTick, onSeek, snapTickLocal, onTransitionMarkersCommit],
+  );
+
+  const onSongsPointerDown = (e: React.PointerEvent) => {
+    if (!timeline || overviewPxPerTick <= 0 || dragRef.current) return;
+    const x = clientXToContentX(e.clientX);
+    const playheadX = tickToContentX(displayPlayheadTick);
+    if (Math.abs(x - playheadX) <= HANDLE_WIDTH_PX / 2 + 4) {
+      e.preventDefault();
+      beginDrag("playhead", e);
       return;
     }
 
     const tick = snapTickLocal(clientXToTick(e.clientX));
-    const row = getRowAtY(clientYToContentY(e.clientY));
-
-    if (row === "trans") {
-      const clickedTransition = timeline.transitions.find((trans) => {
-        const range = getTransitionTickRange(timeline, trans);
-        return range && tick >= range.startTick && tick <= range.endTick;
-      });
-      if (clickedTransition) {
-        onSelectTransition(clickedTransition.id);
-        return;
-      }
+    const clickedTransition = timeline.transitions.find((trans) => {
+      const range = getTransitionTickRange(timeline, trans);
+      return range && tick >= range.startTick && tick <= range.endTick;
+    });
+    if (clickedTransition) {
+      onSelectTransition(clickedTransition.id);
+      return;
     }
 
-    if (row === "songs" || row === null) {
-      setPlayheadPreview(null);
-      onSeek(tick);
-    }
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    const drag = dragRef.current;
-    if (!drag || !timeline || overviewPxPerTick <= 0) return;
-    const deltaTick = (e.clientX - drag.startX) / overviewPxPerTick;
-
-    switch (drag.target) {
-      case "playhead":
-        setPlayheadPreview(snapTickLocal(drag.origPlayhead + deltaTick));
-        break;
-      case "view-start":
-        onViewRangeChange({
-          startTick: snapTickLocal(drag.origView.startTick + deltaTick),
-          endTick: drag.origView.endTick,
-        });
-        break;
-      case "view-end":
-        onViewRangeChange({
-          startTick: drag.origView.startTick,
-          endTick: snapTickLocal(drag.origView.endTick + deltaTick),
-        });
-        break;
-      case "view-pan": {
-        const span = drag.origView.endTick - drag.origView.startTick;
-        onViewRangeChange({
-          startTick: snapTickLocal(drag.origView.startTick + deltaTick),
-          endTick: snapTickLocal(drag.origView.startTick + deltaTick) + span,
-        });
-        break;
-      }
-      case "edit-start":
-        onEditRangeChange({
-          startTick: snapTickLocal(drag.origEdit.startTick + deltaTick),
-          endTick: drag.origEdit.endTick,
-        });
-        break;
-      case "edit-end":
-        onEditRangeChange({
-          startTick: drag.origEdit.startTick,
-          endTick: snapTickLocal(drag.origEdit.endTick + deltaTick),
-        });
-        break;
-      case "edit-pan": {
-        const span = drag.origEdit.endTick - drag.origEdit.startTick;
-        onEditRangeChange({
-          startTick: snapTickLocal(drag.origEdit.startTick + deltaTick),
-          endTick: snapTickLocal(drag.origEdit.startTick + deltaTick) + span,
-        });
-        break;
-      }
-      case "trans-start":
-      case "trans-end": {
-        if (!drag.origTrans || !selectedTransitionId) break;
-        const nextRange =
-          drag.target === "trans-start"
-            ? {
-                startTick: snapTickLocal(drag.origTrans.startTick + deltaTick),
-                endTick: drag.origTrans.endTick,
-              }
-            : {
-                startTick: drag.origTrans.startTick,
-                endTick: snapTickLocal(drag.origTrans.endTick + deltaTick),
-              };
-        commitTransitionRange(nextRange);
-        break;
-      }
-      case "trans-pan": {
-        if (!drag.origTrans || !selectedTransitionId) break;
-        commitTransitionRange({
-          startTick: snapTickLocal(drag.origTrans.startTick + deltaTick),
-          endTick: snapTickLocal(drag.origTrans.endTick + deltaTick),
-        });
-        break;
-      }
-      default:
-        break;
-    }
-  };
-
-  const onPointerUp = (e: React.PointerEvent) => {
-    const drag = dragRef.current;
-    if (drag?.target === "playhead" && overviewPxPerTick > 0) {
-      const deltaTick = (e.clientX - drag.startX) / overviewPxPerTick;
-      onSeek(snapTickLocal(drag.origPlayhead + deltaTick));
-    }
-    if (
-      drag &&
-      (drag.target === "trans-start" ||
-        drag.target === "trans-end" ||
-        drag.target === "trans-pan") &&
-      drag.pendingMixOut != null &&
-      drag.pendingMixIn != null
-    ) {
-      onTransitionMarkersCommit(drag.pendingMixOut, drag.pendingMixIn);
-    }
     setPlayheadPreview(null);
-    setTransPreview(null);
-    dragRef.current = null;
-    setActiveLayer(null);
-    setActiveDragTarget(null);
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
+    onSeek(tick);
   };
 
   if (!timeline) {
@@ -549,7 +581,7 @@ export function MasterTimeline({
       ? "cursor-grabbing"
       : activeDragTarget
         ? "cursor-ew-resize"
-        : "cursor-default";
+        : "";
 
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col gap-1">
@@ -579,13 +611,17 @@ export function MasterTimeline({
       <div className="flex min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-surface">
         <div
           className="flex shrink-0 flex-col border-r border-border/60 bg-panel/40 py-1 pl-2 pr-1.5 text-[10px] text-muted"
-          style={{ width: LABEL_WIDTH, minHeight: TOTAL_HEIGHT }}
+          style={{ width: LABEL_WIDTH, height: PANEL_HEIGHT }}
         >
           {ROW_LAYOUT.map((row) => (
             <div
               key={row.id}
               className="flex flex-col justify-center leading-tight"
-              style={{ height: row.height, marginBottom: row.id === "edit" ? 0 : ROW_GAP, marginTop: row.id === "songs" ? 4 : 0 }}
+              style={{
+                height: row.height,
+                marginBottom: row.id === "edit" ? 0 : ROW_GAP,
+                marginTop: row.id === "songs" ? 4 : 0,
+              }}
               title={row.hint}
             >
               <span className="font-medium text-foreground/80">{row.label}</span>
@@ -597,18 +633,15 @@ export function MasterTimeline({
         <div
           ref={scrollRef}
           className="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
-          style={{ minHeight: TOTAL_HEIGHT }}
+          style={{ height: PANEL_HEIGHT }}
         >
           <div
-            className={`relative touch-none ${dragCursor}`}
+            ref={contentRef}
+            className={`relative select-none ${dragCursor}`}
             style={{
               width: ready ? contentWidth : viewportWidth || "100%",
               height: TOTAL_HEIGHT,
             }}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
           >
             {ready &&
               Array.from({ length: barCount }).map((_, bar) => {
@@ -633,8 +666,16 @@ export function MasterTimeline({
             )}
 
             <div
-              className="absolute left-0"
-              style={{ top: ROW_LAYOUT[0].top, height: ROW_SEGMENTS, width: ready ? contentWidth : "100%" }}
+              className="absolute left-0 cursor-pointer"
+              style={{
+                top: ROW_LAYOUT[0].top,
+                height: ROW_SEGMENTS,
+                width: ready ? contentWidth : "100%",
+              }}
+              onPointerDown={onSongsPointerDown}
+              onPointerMove={onDragMove}
+              onPointerUp={endDrag}
+              onPointerCancel={endDrag}
             >
               {timeline.segments.map((seg, idx) => (
                 <div
@@ -652,26 +693,6 @@ export function MasterTimeline({
                   <div className="truncate font-medium">{seg.display_name}</div>
                 </div>
               ))}
-              {timeline.transitions.map((trans) => {
-                const range = getTransitionTickRange(timeline, trans);
-                if (!range) return null;
-                const selected = selectedTransitionId === trans.id;
-                return (
-                  <div
-                    key={trans.id}
-                    className="pointer-events-none absolute rounded border border-dashed"
-                    style={{
-                      left: tickToContentX(range.startTick),
-                      width: Math.max(4, tickToContentX(range.endTick - range.startTick)),
-                      height: ROW_SEGMENTS - 4,
-                      top: 2,
-                      background: "var(--color-transition)",
-                      borderColor: selected ? "var(--color-accent)" : "var(--color-playhead)",
-                      opacity: selected ? 1 : 0.55,
-                    }}
-                  />
-                );
-              })}
             </div>
 
             {ready && (
@@ -685,21 +706,14 @@ export function MasterTimeline({
                   active={activeLayer === "view"}
                   variant="view"
                   title="View range — drag edges or body to pan detail"
+                  onResizeStart={(edge, e) => beginDrag(edge === "start" ? "view-start" : "view-end", e)}
+                  onPanStart={(e) => beginDrag("view-pan", e)}
+                  onPointerMove={onDragMove}
+                  onPointerUp={endDrag}
+                  onPointerCancel={endDrag}
                 />
 
-                {selectedTransitionId && displayTransitionRange ? (
-                  <RangeBar
-                    range={displayTransitionRange}
-                    top={ROW_LAYOUT[2].top}
-                    height={ROW_TRANS}
-                    width={contentWidth}
-                    tickToContentX={tickToContentX}
-                    active={activeLayer === "trans"}
-                    variant="trans"
-                    dashed
-                    title="Transition scope — AI can reference patterns here"
-                  />
-                ) : (
+                {timeline.transitions.length === 0 ? (
                   <div
                     className="pointer-events-none absolute left-0 flex items-center px-2 text-[9px] italic text-muted/60"
                     style={{
@@ -708,8 +722,46 @@ export function MasterTimeline({
                       width: contentWidth,
                     }}
                   >
-                    Select a transition to set AI reference scope
+                    No transitions yet
                   </div>
+                ) : (
+                  timeline.transitions.map((trans) => {
+                    const range = getTransitionTickRange(timeline, trans);
+                    if (!range) return null;
+                    const selected = selectedTransitionId === trans.id;
+                    const displayRange =
+                      selected && displayTransitionRange ? displayTransitionRange : range;
+                    return (
+                      <RangeBar
+                        key={trans.id}
+                        range={displayRange}
+                        top={ROW_LAYOUT[2].top}
+                        height={ROW_TRANS}
+                        width={contentWidth}
+                        tickToContentX={tickToContentX}
+                        active={selected && activeLayer === "trans"}
+                        variant="trans"
+                        dashed={selected}
+                        dimmed={!selected}
+                        title={
+                          selected
+                            ? "Transition scope — drag to adjust AI reference range"
+                            : "Click to select this transition"
+                        }
+                        onSelect={(e) => {
+                          e.preventDefault();
+                          onSelectTransition(trans.id);
+                        }}
+                        onResizeStart={(edge, e) =>
+                          beginTransitionDrag(edge === "start" ? "trans-start" : "trans-end", trans.id, e)
+                        }
+                        onPanStart={(e) => beginTransitionDrag("trans-pan", trans.id, e)}
+                        onPointerMove={onDragMove}
+                        onPointerUp={endDrag}
+                        onPointerCancel={endDrag}
+                      />
+                    );
+                  })
                 )}
 
                 <RangeBar
@@ -720,7 +772,12 @@ export function MasterTimeline({
                   tickToContentX={tickToContentX}
                   active={activeLayer === "edit"}
                   variant="edit"
-                  title="Edit range — AI can modify notes here"
+                  title="Edit range — drag edges or body to move AI edit window"
+                  onResizeStart={(edge, e) => beginDrag(edge === "start" ? "edit-start" : "edit-end", e)}
+                  onPanStart={(e) => beginDrag("edit-pan", e)}
+                  onPointerMove={onDragMove}
+                  onPointerUp={endDrag}
+                  onPointerCancel={endDrag}
                 />
 
                 <div
@@ -731,9 +788,10 @@ export function MasterTimeline({
                   className="absolute z-40 -translate-x-1/2 cursor-ew-resize rounded-full bg-playhead ring-2 ring-background"
                   style={{
                     transform: `translateX(${playheadX}px)`,
-                    top: ROW_LAYOUT[0].top + ROW_SEGMENTS / 2 - 7,
-                    width: 14,
-                    height: 14,
+                    top: ROW_LAYOUT[0].top + ROW_SEGMENTS / 2 - 8,
+                    width: 16,
+                    height: 16,
+                    pointerEvents: "none",
                   }}
                   title="Playhead"
                 />

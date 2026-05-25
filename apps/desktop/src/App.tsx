@@ -489,7 +489,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="h-44 shrink-0">
+          <div className="h-48 shrink-0">
             <MasterTimeline
               timeline={timeline}
               playheadTick={playheadTick}
@@ -517,6 +517,7 @@ export default function App() {
               pxPerTick={pxPerTick}
               scrollStartTick={scrollStartTick}
               editRange={editRange}
+              transitionRange={transitionRange}
               selectedTrackIds={selectedTrackIds}
               trackScopeMode={trackScopeMode}
               onToggleTrack={toggleTrack}
