@@ -132,6 +132,33 @@ export interface TempoOption {
   end_bpm: number;
 }
 
+export interface PlanStep {
+  id: string;
+  description: string;
+  intent?: string;
+  suggested_tool?: string | null;
+  suggested_params?: Record<string, unknown>;
+  verify?: Record<string, unknown> | null;
+}
+
+export interface ArrangementPlan {
+  plan_summary: string;
+  steps: PlanStep[];
+  tempo_options: TempoOption[];
+  selected_tempo_option_index?: number;
+  constraints_applied?: Record<string, unknown>;
+  legacy_ops?: Operation[];
+}
+
+export interface AgentStepLog {
+  step_index: number;
+  tool_name: string;
+  tool_args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  revision_id?: number | null;
+  error?: string | null;
+}
+
 export interface OperationPlan {
   plan_summary: string;
   tempo_options: TempoOption[];
@@ -263,12 +290,65 @@ export const api = {
     constraints?: Record<string, unknown>;
     mock?: boolean;
   }) =>
-    request<{ plan: OperationPlan; payload: Record<string, unknown>; mode: "live" | "mock" }>(
-      "/api/ai/plan",
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
+    request<{
+      plan: ArrangementPlan;
+      plan_id: string;
+      payload: Record<string, unknown>;
+      mode: "live" | "mock";
+    }>("/api/ai/plan", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  aiAsk: (body: {
+    project_path: string;
+    messages: { role: string; content: string }[];
+    selection?: Record<string, unknown>;
+    mock?: boolean;
+  }) =>
+    request<{ message: string; tool_calls?: unknown[]; mode: string }>("/api/ai/ask", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  agentRun: (body: {
+    project_path: string;
+    prompt: string;
+    selection?: Record<string, unknown>;
+    session_id?: string;
+    plan_id?: string;
+    mock?: boolean;
+  }) =>
+    request<{
+      session_id: string;
+      status: string;
+      summary?: string;
+      steps: AgentStepLog[];
+      timeline?: TimelineData;
+      mode?: string;
+    }>("/api/ai/agent/run", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  agentCancel: (sessionId: string) =>
+    request<{ status: string }>("/api/ai/agent/cancel", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId }),
+    }),
+
+  agentSession: (sessionId: string) =>
+    request<Record<string, unknown>>(`/api/ai/agent/session/${encodeURIComponent(sessionId)}`),
+
+  dryRunOps: (projectPath: string, ops: Operation[]) =>
+    request<RevisionDiff>("/api/projects/dry-run-ops", {
+      method: "POST",
+      body: JSON.stringify({ project_path: projectPath, ops }),
+    }),
+
+  queryTimeline: (projectPath: string) =>
+    request<Record<string, unknown>>(
+      `/api/projects/${encodeURIComponent(projectPath)}/query/timeline`,
     ),
 
   applyPlan: (

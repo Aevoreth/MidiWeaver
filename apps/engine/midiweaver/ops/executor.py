@@ -14,6 +14,7 @@ from midiweaver.models import (
     TrackData,
 )
 from midiweaver.normalize.timeline import apply_tempo_ramp, build_master_timeline, sync_segment_trim_bounds
+from midiweaver.normalize.notes import ensure_note_id
 
 
 class OpContext:
@@ -75,6 +76,22 @@ class OpExecutor:
                     errors.append(f"{op.op_type} missing {key}")
         elif op.op_type == "mute_track" and "track_id" not in p:
             errors.append("mute_track missing track_id")
+        elif op.op_type == "insert_master_gap":
+            if "after_song_id" not in p:
+                errors.append("insert_master_gap missing after_song_id")
+            elif "bars" not in p and "ticks" not in p:
+                errors.append("insert_master_gap missing bars or ticks")
+        elif op.op_type == "loop_region":
+            if "song_id" not in p:
+                errors.append("loop_region missing song_id")
+            elif "source_start_bar" not in p or "source_end_bar" not in p:
+                errors.append("loop_region missing source_start_bar or source_end_bar")
+            elif "repeat_count" not in p and "target_total_bars" not in p:
+                errors.append("loop_region missing repeat_count or target_total_bars")
+        elif op.op_type == "delete_notes_in_region":
+            for key in ("start_tick", "end_tick"):
+                if key not in p:
+                    errors.append(f"delete_notes_in_region missing {key}")
         return errors
 
     def validate_plan(self, plan: OperationPlan) -> list[str]:
@@ -191,12 +208,14 @@ def _extend_drums(ctx: OpContext, params: dict[str, Any]) -> OpContext:
             offset_base = seg.analysis.trim_end_tick or seg.master_end_tick
             for rep in range(bars):
                 for n in phrase:
-                    clone = NoteEvent(
-                        pitch=n.pitch,
-                        start_tick=offset_base + rep * ppq * 4 + (n.start_tick - last_bar_start),
-                        duration_ticks=n.duration_ticks,
-                        velocity=n.velocity if mode != "repeat_with_fill" else min(127, n.velocity + 10),
-                        channel=n.channel,
+                    clone = ensure_note_id(
+                        NoteEvent(
+                            pitch=n.pitch,
+                            start_tick=offset_base + rep * ppq * 4 + (n.start_tick - last_bar_start),
+                            duration_ticks=n.duration_ticks,
+                            velocity=n.velocity if mode != "repeat_with_fill" else min(127, n.velocity + 10),
+                            channel=n.channel,
+                        )
                     )
                     track.notes.append(clone)
     new_ctx.timeline = build_master_timeline(
@@ -267,12 +286,14 @@ def _copy_notes(ctx: OpContext, params: dict[str, Any]) -> OpContext:
                 if src_start <= abs_start < src_end:
                     delta = dest_tick - src_start
                     track.notes.append(
-                        NoteEvent(
-                            pitch=n.pitch,
-                            start_tick=max(0, n.start_tick + delta),
-                            duration_ticks=n.duration_ticks,
-                            velocity=max(1, min(127, int(n.velocity * velocity_scale))),
-                            channel=n.channel,
+                        ensure_note_id(
+                            NoteEvent(
+                                pitch=n.pitch,
+                                start_tick=max(0, n.start_tick + delta),
+                                duration_ticks=n.duration_ticks,
+                                velocity=max(1, min(127, int(n.velocity * velocity_scale))),
+                                channel=n.channel,
+                            )
                         )
                     )
     for seg in new_ctx.timeline.segments:
@@ -346,12 +367,26 @@ def _shift_song(ctx: OpContext, params: dict[str, Any]) -> OpContext:
     return new_ctx
 
 
+def _find_note_index(track: TrackData, params: dict[str, Any]) -> int | None:
+    if "note_id" in params and params["note_id"]:
+        for i, n in enumerate(track.notes):
+            if n.note_id == params["note_id"]:
+                return i
+    if "start_tick" in params and "pitch" in params:
+        for i, n in enumerate(track.notes):
+            if n.start_tick == params["start_tick"] and n.pitch == params["pitch"]:
+                return i
+    note_index = params.get("note_index")
+    if note_index is not None and note_index < len(track.notes):
+        return int(note_index)
+    return None
+
+
 def _manual_edit_note(ctx: OpContext, params: dict[str, Any]) -> OpContext:
     new_ctx = copy.deepcopy(ctx)
     action = params.get("action", "move")
     song_id = params["song_id"]
     track_id = params["track_id"]
-    note_index = params.get("note_index", 0)
 
     for seg in new_ctx.timeline.segments:
         if seg.id != song_id or not seg.analysis:
@@ -361,24 +396,30 @@ def _manual_edit_note(ctx: OpContext, params: dict[str, Any]) -> OpContext:
                 continue
             if action == "add":
                 track.notes.append(
-                    NoteEvent(
-                        pitch=params["pitch"],
-                        start_tick=params["start_tick"],
-                        duration_ticks=params.get("duration_ticks", 480),
-                        velocity=params.get("velocity", 64),
-                        channel=params.get("channel", 0),
+                    ensure_note_id(
+                        NoteEvent(
+                            pitch=params["pitch"],
+                            start_tick=params["start_tick"],
+                            duration_ticks=params.get("duration_ticks", 480),
+                            velocity=params.get("velocity", 64),
+                            channel=params.get("channel", 0),
+                        )
                     )
                 )
-            elif action == "delete" and note_index < len(track.notes):
-                track.notes.pop(note_index)
-            elif action in ("move", "resize") and note_index < len(track.notes):
-                note = track.notes[note_index]
-                if "start_tick" in params:
-                    note.start_tick = params["start_tick"]
-                if "duration_ticks" in params:
-                    note.duration_ticks = params["duration_ticks"]
-                if "velocity" in params:
-                    note.velocity = params["velocity"]
+            else:
+                idx = _find_note_index(track, params)
+                if idx is None:
+                    continue
+                if action == "delete":
+                    track.notes.pop(idx)
+                elif action in ("move", "resize"):
+                    note = track.notes[idx]
+                    if "start_tick" in params:
+                        note.start_tick = params["start_tick"]
+                    if "duration_ticks" in params:
+                        note.duration_ticks = params["duration_ticks"]
+                    if "velocity" in params:
+                        note.velocity = params["velocity"]
     new_ctx.timeline = build_master_timeline(
         new_ctx.timeline.segments,
         new_ctx.timeline.master_ppq,
@@ -464,6 +505,132 @@ def _quantize_region(ctx: OpContext, params: dict[str, Any]) -> OpContext:
     return new_ctx
 
 
+def _insert_master_gap(ctx: OpContext, params: dict[str, Any]) -> OpContext:
+    new_ctx = copy.deepcopy(ctx)
+    after_song_id = params["after_song_id"]
+    ppq = new_ctx.timeline.master_ppq
+    if "ticks" in params:
+        gap = int(params["ticks"])
+    else:
+        gap = int(float(params["bars"]) * 4 * ppq)
+
+    seg_index = next(
+        (i for i, s in enumerate(new_ctx.timeline.segments) if s.id == after_song_id),
+        None,
+    )
+    if seg_index is None or seg_index >= len(new_ctx.timeline.segments) - 1:
+        return new_ctx
+
+    next_seg = new_ctx.timeline.segments[seg_index + 1]
+    next_seg.master_start_offset_ticks += gap
+    new_ctx.timeline = build_master_timeline(
+        new_ctx.timeline.segments,
+        new_ctx.timeline.master_ppq,
+        new_ctx.timeline.transitions,
+    )
+    return new_ctx
+
+
+def _loop_region(ctx: OpContext, params: dict[str, Any]) -> OpContext:
+    new_ctx = copy.deepcopy(ctx)
+    song_id = params["song_id"]
+    ppq = new_ctx.timeline.master_ppq
+
+    for seg in new_ctx.timeline.segments:
+        if seg.id != song_id or not seg.analysis:
+            continue
+        a = seg.analysis
+        beats = a.time_sig[0]
+        bar_ticks = ppq * beats
+        src_start = a.trim_start_tick + int(float(params["source_start_bar"]) * bar_ticks)
+        src_end = a.trim_start_tick + int(float(params["source_end_bar"]) * bar_ticks)
+        region_len = max(bar_ticks, src_end - src_start)
+        track_filter = set(params.get("track_ids", []))
+
+        if "repeat_count" in params:
+            repeats = int(params["repeat_count"])
+        else:
+            target = float(params["target_total_bars"])
+            source_bars = max(1, (src_end - src_start) / bar_ticks)
+            repeats = max(0, int(round(target / source_bars)) - 1)
+
+        dest_base = a.trim_end_tick or src_end
+        for rep in range(repeats):
+            dest_offset = dest_base + rep * region_len - src_start
+            for track in a.tracks:
+                if track_filter and track.track_id not in track_filter:
+                    continue
+                for n in list(track.notes):
+                    if src_start <= n.start_tick < src_end:
+                        track.notes.append(
+                            ensure_note_id(
+                                NoteEvent(
+                                    pitch=n.pitch,
+                                    start_tick=n.start_tick + dest_offset,
+                                    duration_ticks=n.duration_ticks,
+                                    velocity=n.velocity,
+                                    channel=n.channel,
+                                )
+                            )
+                        )
+        sync_segment_trim_bounds(a)
+        seg.trim_start_ticks = a.trim_start_tick
+        seg.trim_end_ticks = a.trim_end_tick
+
+    new_ctx.timeline = build_master_timeline(
+        new_ctx.timeline.segments,
+        new_ctx.timeline.master_ppq,
+        new_ctx.timeline.transitions,
+    )
+    return new_ctx
+
+
+def _delete_notes_in_region(ctx: OpContext, params: dict[str, Any]) -> OpContext:
+    new_ctx = copy.deepcopy(ctx)
+    start = int(params["start_tick"])
+    end = int(params["end_tick"])
+    song_id = params.get("song_id")
+    track_id = params.get("track_id")
+    pitch_min = params.get("pitch_min")
+    pitch_max = params.get("pitch_max")
+    drum_only = params.get("drum_only", False)
+
+    for seg in new_ctx.timeline.segments:
+        if song_id and seg.id != song_id:
+            continue
+        if not seg.analysis:
+            continue
+        offset = seg.master_start_tick - seg.analysis.trim_start_tick
+        for track in seg.analysis.tracks:
+            if track_id and track.track_id != track_id and track.master_track_id != track_id:
+                continue
+            if drum_only and not track.is_drum:
+                continue
+            kept: list[NoteEvent] = []
+            for n in track.notes:
+                abs_start = n.start_tick + offset
+                if start <= abs_start < end:
+                    if pitch_min is not None and n.pitch < pitch_min:
+                        kept.append(n)
+                        continue
+                    if pitch_max is not None and n.pitch > pitch_max:
+                        kept.append(n)
+                        continue
+                    continue
+                kept.append(n)
+            track.notes = kept
+        sync_segment_trim_bounds(seg.analysis)
+        seg.trim_start_ticks = seg.analysis.trim_start_tick
+        seg.trim_end_ticks = seg.analysis.trim_end_tick
+
+    new_ctx.timeline = build_master_timeline(
+        new_ctx.timeline.segments,
+        new_ctx.timeline.master_ppq,
+        new_ctx.timeline.transitions,
+    )
+    return new_ctx
+
+
 def _noop(ctx: OpContext, params: dict[str, Any]) -> OpContext:
     return ctx
 
@@ -476,6 +643,9 @@ ALLOWED_OPS = {
     "copy_notes",
     "echo_notes",
     "shift_song",
+    "insert_master_gap",
+    "loop_region",
+    "delete_notes_in_region",
     "insert_song",
     "transpose_region",
     "quantize_region",
@@ -491,6 +661,9 @@ OP_HANDLERS = {
     "copy_notes": _copy_notes,
     "echo_notes": _echo_notes,
     "shift_song": _shift_song,
+    "insert_master_gap": _insert_master_gap,
+    "loop_region": _loop_region,
+    "delete_notes_in_region": _delete_notes_in_region,
     "manual_edit_note": _manual_edit_note,
     "set_transition_markers": _set_transition_markers,
     "mute_track": _mute_track,

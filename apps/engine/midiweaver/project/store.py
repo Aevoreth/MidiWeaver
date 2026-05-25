@@ -147,6 +147,9 @@ class ProjectStore:
             ]
 
         self._timeline = build_master_timeline(segments, meta.master_ppq, transitions)
+        from midiweaver.normalize.notes import ensure_timeline_note_ids
+
+        ensure_timeline_note_ids(self._timeline)
 
     def _cache_analysis(self, song_id: str, analysis: Any) -> None:
         self._conn.execute(

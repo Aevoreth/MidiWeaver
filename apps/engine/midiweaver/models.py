@@ -32,6 +32,7 @@ class TimeSignatureEvent(BaseModel):
 
 
 class NoteEvent(BaseModel):
+    note_id: str = ""
     pitch: int
     start_tick: int
     duration_ticks: int
@@ -146,6 +147,42 @@ class OperationPlan(BaseModel):
     tempo_options: list[TempoOption] = Field(default_factory=list)
     selected_tempo_option_index: int = 0
     ops: list[Operation] = Field(default_factory=list)
+
+
+class PlanStep(BaseModel):
+    id: str
+    description: str
+    intent: str = ""
+    suggested_tool: str | None = None
+    suggested_params: dict[str, Any] = Field(default_factory=dict)
+    verify: dict[str, Any] | None = None
+
+
+class ArrangementPlan(BaseModel):
+    plan_summary: str
+    steps: list[PlanStep] = Field(default_factory=list)
+    tempo_options: list[TempoOption] = Field(default_factory=list)
+    selected_tempo_option_index: int = 0
+    constraints_applied: dict[str, Any] = Field(default_factory=dict)
+    legacy_ops: list[Operation] = Field(default_factory=list)
+
+
+class AgentStepLog(BaseModel):
+    step_index: int
+    tool_name: str
+    tool_args: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    revision_id: int | None = None
+    error: str | None = None
+
+
+class AgentSession(BaseModel):
+    id: str
+    status: str = "running"
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    steps: list[AgentStepLog] = Field(default_factory=list)
+    plan_id: str | None = None
+    error: str | None = None
 
 
 class RevisionDiff(BaseModel):

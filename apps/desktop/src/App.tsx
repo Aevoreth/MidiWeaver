@@ -22,7 +22,7 @@ import { PianoRoll, type TrackScopeMode } from "@/features/timeline/PianoRoll";
 import { getTransitionTickRange, projectTotalTicks, tickRangeToBarRange } from "@/features/timeline/timelineUtils";
 import { useTimelineViewport } from "@/features/timeline/useTimelineViewport";
 import { TransportBar } from "@/features/transport/TransportBar";
-import { AIPlannerPanel } from "@/features/ai-planner/AIPlannerPanel";
+import { AIPanel } from "@/features/ai-planner/AIPanel";
 import { TrackMappingPanel } from "@/features/mapping/TrackMappingPanel";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
 
@@ -334,10 +334,27 @@ export default function App() {
           )}
 
           {sidebarTab === "ai" && projectPath && (
-            <AIPlannerPanel
+            <AIPanel
               aiMode={aiMode}
               diff={lastDiff}
-              onGenerate={async (prompt, constraints) => {
+              onAsk={async (messages) => {
+                const trans = timeline?.transitions.find((t) => t.id === selectedTransitionId);
+                return api.aiAsk({
+                  project_path: projectPath,
+                  messages,
+                  selection: {
+                    scope: "transition",
+                    master_bar_range: editBarRange,
+                    transition_id: trans?.id,
+                    track_ids:
+                      trackScopeMode === "selected" && selectedTrackIds.size > 0
+                        ? [...selectedTrackIds]
+                        : undefined,
+                  },
+                  mock: forceMockAi,
+                });
+              }}
+              onPlan={async (prompt, constraints) => {
                 const trans = timeline?.transitions.find((t) => t.id === selectedTransitionId);
                 const result = await api.aiPlan({
                   project_path: projectPath,
@@ -354,22 +371,40 @@ export default function App() {
                   constraints,
                   mock: forceMockAi,
                 });
-                return { plan: result.plan, mode: result.mode };
+                return { plan: result.plan, planId: result.plan_id, mode: result.mode };
               }}
-              onApply={async (plan, enabledIndices, tempoIndex) => {
-                const planWithTempo = {
-                  ...plan,
-                  selected_tempo_option_index: tempoIndex,
-                };
-                const result = await api.applyPlan(
-                  projectPath,
-                  planWithTempo,
-                  enabledIndices,
-                  selectedTransitionId ?? undefined,
-                );
-                setTimeline(result.timeline);
-                setLastDiff(result.revision.diff ?? null);
-                setStatus("Applied AI plan");
+              onAgentRun={async (prompt, planId) => {
+                const trans = timeline?.transitions.find((t) => t.id === selectedTransitionId);
+                const result = await api.agentRun({
+                  project_path: projectPath,
+                  prompt,
+                  plan_id: planId,
+                  selection: {
+                    scope: "transition",
+                    master_bar_range: editBarRange,
+                    transition_id: trans?.id,
+                    track_ids:
+                      trackScopeMode === "selected" && selectedTrackIds.size > 0
+                        ? [...selectedTrackIds]
+                        : undefined,
+                  },
+                  mock: forceMockAi,
+                });
+                if (result.timeline) {
+                  setTimeline(result.timeline);
+                  const lastStep = result.steps[result.steps.length - 1];
+                  const diff = lastStep?.result?.diff as RevisionDiff | undefined;
+                  if (diff) setLastDiff(diff);
+                }
+                setStatus(`Agent ${result.status}`);
+                return result;
+              }}
+              onAgentCancel={async (sessionId) => {
+                await api.agentCancel(sessionId);
+              }}
+              onTimelineRefresh={async () => {
+                const t = await api.getTimeline(projectPath);
+                setTimeline(t);
               }}
             />
           )}

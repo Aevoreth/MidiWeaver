@@ -9,12 +9,26 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+import httpx
+
 from midiweaver import __version__
+from midiweaver.ai.agent import ArrangementAgent, ArrangementPlanner
+from midiweaver.ai.ask import AskAssistant
 from midiweaver.ai.planner import AIPlanner, OllamaClientStub, PromptBuilder, resolve_plan, _song_segments_from_timeline
+from midiweaver.ai.tools import ToolExecutor, plan_store, agent_session_store
+from midiweaver.ai.selection import normalize_selection
 from midiweaver.audio.engine import AudioEngine, MidiExporter
-from midiweaver.models import Operation, OperationPlan, TrackMappingEntry
+from midiweaver.models import ArrangementPlan, Operation, OperationPlan, TrackMappingEntry
 from midiweaver.ops.executor import OpExecutor
 from midiweaver.project.store import create_project, get_project, open_project
+from midiweaver.query.context import (
+    analyze_region,
+    get_loop_candidates,
+    get_timeline_summary,
+    get_transition_context,
+    measure_region,
+    query_notes,
+)
 from midiweaver.settings_store import load_settings, save_settings, settings_public_view
 
 app = FastAPI(title="MidiWeaver Engine", version=__version__)
@@ -64,6 +78,31 @@ class ApplyPlanRequest(BaseModel):
     plan: OperationPlan
     enabled_op_indices: list[int] | None = None
     transition_id: str | None = None
+
+
+class DryRunOpsRequest(BaseModel):
+    project_path: str
+    ops: list[Operation]
+
+
+class AskRequest(BaseModel):
+    project_path: str
+    messages: list[dict[str, Any]]
+    selection: dict[str, Any] = Field(default_factory=dict)
+    mock: bool = False
+
+
+class AgentRunRequest(BaseModel):
+    project_path: str
+    prompt: str
+    selection: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = None
+    plan_id: str | None = None
+    mock: bool = False
+
+
+class AgentCancelRequest(BaseModel):
+    session_id: str
 
 
 class TrackMappingRequest(BaseModel):
@@ -120,6 +159,8 @@ class SettingsUpdate(BaseModel):
     ai_base_url: str | None = None
     ai_api_key: str | None = None
     ai_model: str | None = None
+    ai_agent_model: str | None = None
+    ai_agent_max_steps: int | None = None
     clear_ai_api_key: bool | None = None
     ollama_enabled: bool | None = None
     audio_backend: str | None = None
@@ -189,6 +230,96 @@ def api_open_project(body: CreateProjectRequest) -> dict[str, Any]:
     return {"path": body.path, "meta": meta.model_dump(), "timeline": store.timeline.model_dump()}
 
 
+def _load_meta(store: Any) -> Any:
+    import json
+    from midiweaver.models import ProjectMetadata
+
+    return ProjectMetadata(**json.loads(store.project_json.read_text(encoding="utf-8")))
+
+
+@app.get("/api/projects/{project_path:path}/query/timeline")
+def query_timeline(project_path: str) -> dict[str, Any]:
+    store = get_project(project_path)
+    meta = _load_meta(store)
+    return get_timeline_summary(store.timeline, meta.track_mapping)
+
+
+@app.get("/api/projects/{project_path:path}/query/notes")
+def query_notes_endpoint(
+    project_path: str,
+    start_bar: float | None = None,
+    end_bar: float | None = None,
+    start_tick: int | None = None,
+    end_tick: int | None = None,
+    song_id: str | None = None,
+    track_id: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> dict[str, Any]:
+    store = get_project(project_path)
+    return query_notes(
+        store.timeline,
+        start_bar=start_bar,
+        end_bar=end_bar,
+        start_tick=start_tick,
+        end_tick=end_tick,
+        song_id=song_id,
+        track_id=track_id,
+        limit=min(limit, 500),
+        offset=offset,
+    )
+
+
+@app.get("/api/projects/{project_path:path}/query/transition/{transition_id}")
+def query_transition(project_path: str, transition_id: str) -> dict[str, Any]:
+    store = get_project(project_path)
+    return get_transition_context(store.timeline, transition_id)
+
+
+@app.get("/api/projects/{project_path:path}/query/analyze")
+def query_analyze(
+    project_path: str,
+    start_bar: float = Query(...),
+    end_bar: float = Query(...),
+) -> dict[str, Any]:
+    store = get_project(project_path)
+    return analyze_region(store.timeline, [start_bar, end_bar])
+
+
+@app.get("/api/projects/{project_path:path}/query/loops/{song_id}")
+def query_loops(project_path: str, song_id: str) -> dict[str, Any]:
+    store = get_project(project_path)
+    return get_loop_candidates(store.timeline, song_id)
+
+
+@app.get("/api/projects/{project_path:path}/query/measure")
+def query_measure_endpoint(
+    project_path: str,
+    start_bar: float | None = None,
+    end_bar: float | None = None,
+    song_id: str | None = None,
+) -> dict[str, Any]:
+    store = get_project(project_path)
+    return measure_region(
+        store.timeline,
+        start_bar=start_bar,
+        end_bar=end_bar,
+        song_id=song_id,
+    )
+
+
+@app.post("/api/projects/dry-run-ops")
+def dry_run_ops(body: DryRunOpsRequest) -> dict[str, Any]:
+    store = get_project(body.project_path)
+    errors: list[str] = []
+    for op in body.ops:
+        errors.extend(_executor.validate_op(op))
+    if errors:
+        raise HTTPException(status_code=400, detail=errors)
+    diff = _executor.dry_run(store.get_context(), body.ops)
+    return diff.model_dump()
+
+
 @app.get("/api/projects/{project_path:path}/timeline")
 def get_timeline(project_path: str) -> dict[str, Any]:
     store = get_project(project_path)
@@ -256,29 +387,99 @@ def reorder_songs(body: ReorderSongsRequest) -> dict[str, Any]:
     return {"timeline": store.timeline.model_dump()}
 
 
+@app.post("/api/ai/ask")
+async def ai_ask(body: AskRequest) -> dict[str, Any]:
+    store = get_project(body.project_path)
+    tool_executor = ToolExecutor(store, _executor)
+    assistant = AskAssistant(_settings.ai_base_url, _settings.ai_api_key, _settings.ai_model)
+    use_mock = body.mock or not _settings.ai_api_key
+    try:
+        result = await assistant.chat(body.messages, tool_executor, mock=use_mock)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    return result
+
+
 @app.post("/api/ai/plan")
 async def ai_plan(body: AIPlanRequest) -> dict[str, Any]:
     store = get_project(body.project_path)
-    meta_text = store.project_json.read_text(encoding="utf-8")
-    import json
-    from midiweaver.models import ProjectMetadata
-
-    meta = ProjectMetadata(**json.loads(meta_text))
+    meta = _load_meta(store)
+    selection = normalize_selection(body.selection)
     payload = _prompt_builder.build(
         store.timeline,
         meta.track_mapping,
-        body.selection,
+        selection,
         body.user_prompt,
         body.constraints,
     )
-    planner = AIPlanner(_settings.ai_base_url, _settings.ai_api_key, _settings.ai_model)
+    tool_executor = ToolExecutor(store, _executor)
+    planner = ArrangementPlanner(_settings.ai_base_url, _settings.ai_api_key, _settings.ai_model)
     use_mock = body.mock or not _settings.ai_api_key
     try:
-        plan = await planner.plan(payload, mock=use_mock)
+        plan = await planner.plan(payload, tool_executor, mock=use_mock)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    plan_id = plan_store.put(plan)
     mode = "mock" if use_mock else "live"
-    return {"payload": payload, "plan": plan.model_dump(), "mode": mode}
+    return {
+        "payload": payload,
+        "plan": plan.model_dump(),
+        "plan_id": plan_id,
+        "mode": mode,
+    }
+
+
+@app.get("/api/ai/plan/{plan_id}")
+def get_stored_plan(plan_id: str) -> dict[str, Any]:
+    plan = plan_store.get(plan_id)
+    if not plan:
+        raise HTTPException(404, "Plan not found or expired")
+    return {"plan": plan.model_dump(), "plan_id": plan_id}
+
+
+@app.post("/api/ai/agent/run")
+async def agent_run(body: AgentRunRequest) -> dict[str, Any]:
+    store = get_project(body.project_path)
+    agent_model = _settings.ai_agent_model or _settings.ai_model
+    agent = ArrangementAgent(
+        _settings.ai_base_url,
+        _settings.ai_api_key,
+        agent_model,
+        max_steps=_settings.ai_agent_max_steps,
+    )
+    use_mock = body.mock or not _settings.ai_api_key
+    try:
+        result = await agent.run(
+            store=store,
+            prompt=body.prompt,
+            selection=normalize_selection(body.selection),
+            session_id=body.session_id,
+            plan_id=body.plan_id,
+            mock=use_mock,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    return result
+
+
+@app.post("/api/ai/agent/cancel")
+def agent_cancel(body: AgentCancelRequest) -> dict[str, str]:
+    agent_session_store.cancel(body.session_id)
+    return {"status": "cancelled", "session_id": body.session_id}
+
+
+@app.get("/api/ai/agent/session/{session_id}")
+def agent_session(session_id: str) -> dict[str, Any]:
+    session = agent_session_store.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found or expired")
+    return session
 
 
 @app.post("/api/ai/validate-plan")

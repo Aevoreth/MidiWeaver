@@ -10,6 +10,8 @@ class EngineSettings(BaseModel):
     ai_base_url: str = "https://api.openai.com/v1"
     ai_api_key: str = ""
     ai_model: str = "gpt-4o-mini"
+    ai_agent_model: str = ""
+    ai_agent_max_steps: int = 25
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_enabled: bool = False
     audio_backend: str = "system_midi"

@@ -161,3 +161,72 @@ def test_undo_redo(project_bundle):
     assert undone is not None
     redone = store.redo()
     assert redone is not None
+
+
+def test_insert_master_gap(project_bundle):
+    from midiweaver.project.store import get_project
+
+    store = get_project(str(project_bundle))
+    seg0 = store.timeline.segments[0]
+    seg1 = store.timeline.segments[1]
+    gap_before = seg1.master_start_tick - seg0.master_end_tick
+    store.apply_ops(
+        [
+            Operation(
+                op_type="insert_master_gap",
+                params={"after_song_id": seg0.id, "bars": 4},
+            )
+        ],
+        "gap",
+    )
+    seg1_after = store.timeline.segments[1]
+    gap_after = seg1_after.master_start_tick - store.timeline.segments[0].master_end_tick
+    assert gap_after > gap_before
+
+
+def test_loop_region(project_bundle):
+    from midiweaver.project.store import get_project
+
+    store = get_project(str(project_bundle))
+    seg = store.timeline.segments[0]
+    before = len(seg.analysis.tracks[0].notes)
+    store.apply_ops(
+        [
+            Operation(
+                op_type="loop_region",
+                params={
+                    "song_id": seg.id,
+                    "source_start_bar": 0,
+                    "source_end_bar": 1,
+                    "repeat_count": 2,
+                },
+            )
+        ],
+        "loop",
+    )
+    after = len(store.timeline.segments[0].analysis.tracks[0].notes)
+    assert after > before
+
+
+def test_delete_notes_in_region(project_bundle):
+    from midiweaver.normalize.timeline import collect_master_notes
+    from midiweaver.project.store import get_project
+
+    store = get_project(str(project_bundle))
+    before = len(collect_master_notes(store.timeline))
+    end = store.timeline.segments[0].master_end_tick
+    store.apply_ops(
+        [
+            Operation(
+                op_type="delete_notes_in_region",
+                params={
+                    "start_tick": 0,
+                    "end_tick": min(end, store.timeline.master_ppq * 4),
+                    "drum_only": True,
+                },
+            )
+        ],
+        "delete",
+    )
+    after = len(collect_master_notes(store.timeline))
+    assert after <= before

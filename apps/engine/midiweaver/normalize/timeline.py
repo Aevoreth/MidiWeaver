@@ -44,6 +44,7 @@ def normalize_analysis(analysis: AnalysisSnapshot, master_ppq: int) -> AnalysisS
     for track in data.tracks:
         notes = [
             NoteEvent(
+                note_id=n.note_id or "",
                 pitch=n.pitch,
                 start_tick=rt(n.start_tick),
                 duration_ticks=max(1, rt(n.start_tick + n.duration_ticks) - rt(n.start_tick)),
@@ -180,6 +181,7 @@ def collect_master_notes(timeline: MasterTimeline) -> list[dict]:
                         "start_tick": n.start_tick + offset,
                         "duration_ticks": n.duration_ticks,
                         "velocity": n.velocity,
+                        "note_id": n.note_id or "",
                         "channel": n.channel if n.channel is not None else track.channel,
                         "program": track.program,
                         "is_drum": track.is_drum,

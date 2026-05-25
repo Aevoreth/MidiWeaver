@@ -76,6 +76,7 @@ export function MasterTimeline({
     pendingMixIn?: number;
   } | null>(null);
   const [activeLayer, setActiveLayer] = useState<"view" | "edit" | "trans" | null>(null);
+  const [activeDragTarget, setActiveDragTarget] = useState<DragTarget>(null);
   const [transPreview, setTransPreview] = useState<TickRange | null>(null);
 
   const ppq = timeline?.master_ppq ?? 480;
@@ -235,6 +236,7 @@ export function MasterTimeline({
         origTrans: displayTransitionRange ? { ...displayTransitionRange } : null,
         origPlayhead: displayPlayheadTick,
       };
+      setActiveDragTarget(target);
       if (target.startsWith("view")) setActiveLayer("view");
       else if (target.startsWith("edit")) setActiveLayer("edit");
       else if (target.startsWith("trans")) setActiveLayer("trans");
@@ -343,6 +345,7 @@ export function MasterTimeline({
     setTransPreview(null);
     dragRef.current = null;
     setActiveLayer(null);
+    setActiveDragTarget(null);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
@@ -365,6 +368,12 @@ export function MasterTimeline({
   const transTop = editTop + ROW_EDIT + 2;
   const playheadX = tickToContentX(displayPlayheadTick);
   const ready = viewportWidth > 0 && overviewPxPerTick > 0;
+  const dragCursor =
+    activeDragTarget === "view-pan"
+      ? "cursor-grabbing"
+      : activeDragTarget
+        ? "cursor-ew-resize"
+        : "cursor-crosshair";
 
   return (
     <div ref={containerRef} className="flex h-full min-h-0 flex-col gap-1">
@@ -407,7 +416,7 @@ export function MasterTimeline({
         style={{ minHeight: TOTAL_HEIGHT }}
       >
         <div
-          className="relative cursor-crosshair touch-none"
+          className={`relative touch-none ${dragCursor}`}
           style={{
             width: ready ? contentWidth : viewportWidth || "100%",
             height: TOTAL_HEIGHT,
@@ -491,8 +500,8 @@ export function MasterTimeline({
                   }}
                   title="View range — drag edges or center to pan detail"
                 >
-                  <div className="absolute left-0 top-0 h-full w-1.5 cursor-ew-resize bg-accent/40" />
-                  <div className="absolute right-0 top-0 h-full w-1.5 cursor-ew-resize bg-accent/40" />
+                  <div className="absolute left-0 top-0 h-full w-4 cursor-ew-resize bg-accent/40" />
+                  <div className="absolute right-0 top-0 h-full w-4 cursor-ew-resize bg-accent/40" />
                 </div>
               </div>
 
@@ -506,8 +515,8 @@ export function MasterTimeline({
                     boxShadow: activeLayer === "edit" ? "0 0 0 1px var(--color-edit-range)" : undefined,
                   }}
                 >
-                  <div className="absolute left-0 top-0 h-full w-1.5 cursor-ew-resize bg-edit-range/60" />
-                  <div className="absolute right-0 top-0 h-full w-1.5 cursor-ew-resize bg-edit-range/60" />
+                  <div className="absolute left-0 top-0 h-full w-4 cursor-ew-resize bg-edit-range/60" />
+                  <div className="absolute right-0 top-0 h-full w-4 cursor-ew-resize bg-edit-range/60" />
                 </div>
               </div>
 
@@ -525,8 +534,8 @@ export function MasterTimeline({
                       boxShadow: activeLayer === "trans" ? "0 0 0 1px var(--color-playhead)" : undefined,
                     }}
                   >
-                    <div className="absolute left-0 top-0 h-full w-1.5 cursor-ew-resize bg-playhead/50" />
-                    <div className="absolute right-0 top-0 h-full w-1.5 cursor-ew-resize bg-playhead/50" />
+                    <div className="absolute left-0 top-0 h-full w-4 cursor-ew-resize bg-playhead/50" />
+                    <div className="absolute right-0 top-0 h-full w-4 cursor-ew-resize bg-playhead/50" />
                   </div>
                 </div>
               )}

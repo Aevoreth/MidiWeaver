@@ -138,6 +138,9 @@ def resolve_plan(
     return plan.model_copy(update={"ops": new_ops})
 
 
+from midiweaver.ai.selection import normalize_selection
+
+
 DEFAULT_CONSTRAINTS = {
     "max_transpose_semitones": 6,
     "max_tempo_delta": 40,
@@ -160,6 +163,7 @@ class PromptBuilder:
         user_prompt: str,
         constraints: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        selection = normalize_selection(selection)
         global_ctx = self._build_global(timeline, track_mapping)
         regional = self._build_selection(timeline, selection)
         return {
@@ -204,7 +208,7 @@ class PromptBuilder:
             bpm = timeline.segments[0].analysis.estimated_bpm
         start_tick = bars_to_ticks(bar_range[0], timeline.master_ppq, bpm)
         end_tick = bars_to_ticks(bar_range[1], timeline.master_ppq, bpm)
-        track_filter = set(selection.get("tracks", []))
+        track_filter = set(selection.get("tracks", []) or selection.get("track_ids", []))
 
         notes = collect_master_notes(timeline)
         filtered = [

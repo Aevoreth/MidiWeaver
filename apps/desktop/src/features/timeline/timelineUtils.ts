@@ -11,7 +11,7 @@ export const MAX_PX_PER_TICK = 0.5;
 export const DEFAULT_PX_PER_TICK = 0.08;
 export const MIN_OVERVIEW_ZOOM = 1;
 export const MAX_OVERVIEW_ZOOM = 32;
-export const HANDLE_WIDTH_PX = 8;
+export const HANDLE_WIDTH_PX = 16;
 
 /** Authoritative project length in ticks (guards bad/missing total_ticks). */
 export function projectTotalTicks(timeline: TimelineData | null, ppq = 480): number {
