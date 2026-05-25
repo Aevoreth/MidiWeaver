@@ -16,6 +16,8 @@
   --color-segment-a: #3b4252;
   --color-segment-b: #434c5e;
   --color-transition: rgba(232, 168, 56, 0.18);
+  --color-edit-range: #4dab9a;
+  --color-view-range: rgba(77, 171, 154, 0.45);
   --color-success: #69db7c;
   --color-warning: #ffd43b;
   --color-error: #ff8787;

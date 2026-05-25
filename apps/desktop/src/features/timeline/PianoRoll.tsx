@@ -1,15 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NoteEvent, TimelineData, TrackData } from "@/lib/api";
 import { instrumentLabel, mixerTrackId, snapTick, trackNumberFromId } from "@/lib/utils";
+import type { TickRange } from "./timelineUtils";
 
 type EditMode = "select" | "draw" | "erase";
+export type TrackScopeMode = "all" | "selected";
 
 interface PianoRollProps {
   timeline: TimelineData | null;
+  totalTicks: number;
   playheadTick: number;
+  playing: boolean;
+  followPlayhead: boolean;
   snap: string;
-  visibleStartTick: number;
-  visibleEndTick: number;
+  pxPerTick: number;
+  scrollStartTick: number;
+  editRange: TickRange;
+  selectedTrackIds: Set<string>;
+  trackScopeMode: TrackScopeMode;
+  onToggleTrack: (trackId: string) => void;
+  onTrackScopeModeChange: (mode: TrackScopeMode) => void;
+  onViewportWidthChange: (width: number) => void;
+  onScrollStartChange: (tick: number) => void;
+  onZoomAt: (cursorTick: number, factor: number) => void;
+  onSeek: (tick: number) => void;
   onEdit: (action: string, payload: Record<string, unknown>) => void;
   onMixerChange: (trackId: string, patch: { mute?: boolean; solo?: boolean; volume?: number }) => void;
 }
@@ -18,7 +32,6 @@ const LANE_HEIGHT = 60;
 const NOTE_HIT_HEIGHT = 6;
 const NOTE_LINE_WIDTH = 2;
 const LABEL_WIDTH = 280;
-const PX_PER_TICK = 0.08;
 
 interface TrackLane {
   songId: string;
@@ -44,10 +57,22 @@ function yToPitch(y: number, lane: TrackLane): number {
 
 export function PianoRoll({
   timeline,
+  totalTicks,
   playheadTick,
+  playing,
+  followPlayhead,
   snap,
-  visibleStartTick,
-  visibleEndTick,
+  pxPerTick,
+  scrollStartTick,
+  editRange,
+  selectedTrackIds,
+  trackScopeMode,
+  onToggleTrack,
+  onTrackScopeModeChange,
+  onViewportWidthChange,
+  onScrollStartChange,
+  onZoomAt,
+  onSeek,
   onEdit,
   onMixerChange,
 }: PianoRollProps) {
@@ -55,11 +80,14 @@ export function PianoRoll({
   const labelsScrollRef = useRef<HTMLDivElement>(null);
   const notesScrollRef = useRef<HTMLDivElement>(null);
   const syncingScrollRef = useRef(false);
+  const [viewportWidth, setViewportWidth] = useState(800);
   const [mode, setMode] = useState<EditMode>("select");
   const [selected, setSelected] = useState<{ songId: string; trackId: string; index: number } | null>(null);
   const dragRef = useRef<{ kind: "move" | "resize"; startX: number; origStart: number; origDur: number } | null>(null);
+  const drawRef = useRef<() => void>(() => {});
 
   const ppq = timeline?.master_ppq ?? 480;
+  const scrollContentWidth = Math.max(viewportWidth, totalTicks * pxPerTick);
 
   const lanes = useMemo((): TrackLane[] => {
     const result: TrackLane[] = [];
@@ -83,6 +111,81 @@ export function PianoRoll({
     return result;
   }, [timeline]);
 
+  useEffect(() => {
+    const el = notesScrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? el.clientWidth;
+      setViewportWidth(w);
+      onViewportWidthChange(w);
+    });
+    ro.observe(el);
+    const w = el.clientWidth;
+    setViewportWidth(w);
+    onViewportWidthChange(w);
+    return () => ro.disconnect();
+  }, [onViewportWidthChange]);
+
+  useEffect(() => {
+    const el = notesScrollRef.current;
+    if (!el || syncingScrollRef.current) return;
+    const targetScroll = scrollStartTick * pxPerTick;
+    if (Math.abs(el.scrollLeft - targetScroll) > 2) {
+      syncingScrollRef.current = true;
+      el.scrollLeft = targetScroll;
+      requestAnimationFrame(() => {
+        drawRef.current();
+        syncingScrollRef.current = false;
+      });
+    }
+  }, [scrollStartTick, pxPerTick]);
+
+  useEffect(() => {
+    if (!playing || !followPlayhead) return;
+    const el = notesScrollRef.current;
+    if (!el) return;
+    const playheadPx = playheadTick * pxPerTick;
+    const margin = el.clientWidth * 0.12;
+    let nextScroll = el.scrollLeft;
+    if (playheadPx < el.scrollLeft + margin) {
+      nextScroll = Math.max(0, playheadPx - margin);
+    } else if (playheadPx > el.scrollLeft + el.clientWidth - margin) {
+      nextScroll = playheadPx - el.clientWidth + margin;
+    }
+    const maxScroll = Math.max(0, scrollContentWidth - el.clientWidth);
+    nextScroll = Math.min(maxScroll, nextScroll);
+    if (Math.abs(nextScroll - el.scrollLeft) > 1) {
+      syncingScrollRef.current = true;
+      el.scrollLeft = nextScroll;
+      onScrollStartChange(nextScroll / pxPerTick);
+      requestAnimationFrame(() => {
+        drawRef.current();
+        syncingScrollRef.current = false;
+      });
+    }
+  }, [playheadTick, playing, followPlayhead, pxPerTick, scrollContentWidth, onScrollStartChange]);
+
+  const handleWheel = useCallback(
+    (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const el = notesScrollRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const cursorTick = (el.scrollLeft + (e.clientX - rect.left)) / pxPerTick;
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      onZoomAt(cursorTick, factor);
+    },
+    [pxPerTick, onZoomAt],
+  );
+
+  useEffect(() => {
+    const el = notesScrollRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
+
   const syncVerticalScroll = useCallback((source: "labels" | "notes") => {
     if (syncingScrollRef.current) return;
     const labelsEl = labelsScrollRef.current;
@@ -98,25 +201,59 @@ export function PianoRoll({
     syncingScrollRef.current = false;
   }, []);
 
+  const handleHorizontalScroll = useCallback(() => {
+    syncVerticalScroll("notes");
+    if (syncingScrollRef.current) return;
+    const el = notesScrollRef.current;
+    if (!el) return;
+    onScrollStartChange(el.scrollLeft / pxPerTick);
+    requestAnimationFrame(() => drawRef.current());
+  }, [pxPerTick, onScrollStartChange, syncVerticalScroll]);
+
+  const isLaneInScope = useCallback(
+    (mixerId: string) => trackScopeMode === "all" || selectedTrackIds.has(mixerId),
+    [trackScopeMode, selectedTrackIds],
+  );
+
+  const getScrollStartTick = useCallback(() => {
+    const el = notesScrollRef.current;
+    return el ? el.scrollLeft / pxPerTick : scrollStartTick;
+  }, [pxPerTick, scrollStartTick]);
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !timeline) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const width = (visibleEndTick - visibleStartTick) * PX_PER_TICK;
+    const drawStartTick = getScrollStartTick();
+    const drawEndTick = drawStartTick + viewportWidth / pxPerTick;
     const height = Math.max(LANE_HEIGHT, lanes.length * LANE_HEIGHT);
-    canvas.width = width;
+    canvas.width = viewportWidth;
     canvas.height = height;
 
     ctx.fillStyle = "#1e1f23";
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(0, 0, viewportWidth, height);
+
+    const editStartX = (editRange.startTick - drawStartTick) * pxPerTick;
+    const editEndX = (editRange.endTick - drawStartTick) * pxPerTick;
+    if (editEndX > 0 && editStartX < viewportWidth) {
+      ctx.fillStyle = "rgba(77, 171, 154, 0.08)";
+      ctx.fillRect(
+        Math.max(0, editStartX),
+        0,
+        Math.min(viewportWidth, editEndX) - Math.max(0, editStartX),
+        height,
+      );
+    }
 
     const gridStep = snap === "bar" ? ppq * 4 : snap === "beat" ? ppq : ppq / 4;
+    const firstGrid = Math.floor(drawStartTick / gridStep) * gridStep;
     ctx.strokeStyle = "#333438";
     ctx.lineWidth = 1;
-    for (let t = 0; t <= visibleEndTick - visibleStartTick; t += gridStep) {
-      const x = t * PX_PER_TICK;
+    for (let tick = firstGrid; tick <= drawEndTick; tick += gridStep) {
+      const x = (tick - drawStartTick) * pxPerTick;
+      if (x < -1 || x > viewportWidth + 1) continue;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, height);
@@ -125,33 +262,44 @@ export function PianoRoll({
 
     lanes.forEach((lane, laneIndex) => {
       const laneTop = laneIndex * LANE_HEIGHT;
-      ctx.fillStyle = laneIndex % 2 === 0 ? "#23252a" : "#1e1f23";
-      ctx.fillRect(0, laneTop, width, LANE_HEIGHT);
+      const inScope = isLaneInScope(lane.mixerId);
+      const trackSelected = selectedTrackIds.has(lane.mixerId);
+      ctx.fillStyle =
+        !inScope && trackScopeMode === "selected"
+          ? "#1a1b1e"
+          : trackSelected
+            ? "#2a3532"
+            : laneIndex % 2 === 0
+              ? "#23252a"
+              : "#1e1f23";
+      ctx.fillRect(0, laneTop, viewportWidth, LANE_HEIGHT);
 
       ctx.strokeStyle = "#3a3c42";
       ctx.beginPath();
       ctx.moveTo(0, laneTop + LANE_HEIGHT - 0.5);
-      ctx.lineTo(width, laneTop + LANE_HEIGHT - 0.5);
+      ctx.lineTo(viewportWidth, laneTop + LANE_HEIGHT - 0.5);
       ctx.stroke();
+
+      if (!inScope) return;
 
       lane.track.notes.forEach((note, index) => {
         const absStart = note.start_tick + lane.offset;
-        if (absStart + note.duration_ticks < visibleStartTick || absStart > visibleEndTick) return;
-        const x = (absStart - visibleStartTick) * PX_PER_TICK;
-        const w = Math.max(2, note.duration_ticks * PX_PER_TICK);
+        if (absStart + note.duration_ticks < drawStartTick || absStart > drawEndTick) return;
+        const x = (absStart - drawStartTick) * pxPerTick;
+        const w = Math.max(2, note.duration_ticks * pxPerTick);
         const y = laneTop + lanePitchY(note.pitch, lane);
         const centerY = y + NOTE_HIT_HEIGHT / 2;
-        const isSelected =
+        const isNoteSelected =
           selected?.songId === lane.songId &&
           selected.trackId === lane.track.track_id &&
           selected.index === index;
 
         ctx.strokeStyle = lane.track.is_drum
           ? "rgba(232, 168, 56, 0.9)"
-          : isSelected
+          : isNoteSelected
             ? "rgba(77, 171, 154, 1)"
             : "rgba(77, 171, 154, 0.75)";
-        ctx.lineWidth = isSelected ? NOTE_LINE_WIDTH + 1 : NOTE_LINE_WIDTH;
+        ctx.lineWidth = isNoteSelected ? NOTE_LINE_WIDTH + 1 : NOTE_LINE_WIDTH;
         ctx.lineCap = "round";
         ctx.beginPath();
         ctx.moveTo(x, centerY);
@@ -160,17 +308,35 @@ export function PianoRoll({
       });
     });
 
-    const ph = (playheadTick - visibleStartTick) * PX_PER_TICK;
-    ctx.strokeStyle = "#e8a838";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(ph, 0);
-    ctx.lineTo(ph, height);
-    ctx.stroke();
-    ctx.lineWidth = 1;
-  }, [timeline, lanes, visibleStartTick, visibleEndTick, playheadTick, snap, ppq, selected]);
+    const ph = (playheadTick - drawStartTick) * pxPerTick;
+    if (ph >= -2 && ph <= viewportWidth + 2) {
+      ctx.strokeStyle = "#e8a838";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ph, 0);
+      ctx.lineTo(ph, height);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+  }, [
+    timeline,
+    lanes,
+    scrollStartTick,
+    getScrollStartTick,
+    editRange,
+    playheadTick,
+    snap,
+    ppq,
+    selected,
+    pxPerTick,
+    viewportWidth,
+    isLaneInScope,
+    selectedTrackIds,
+    trackScopeMode,
+  ]);
 
   useEffect(() => {
+    drawRef.current = draw;
     draw();
   }, [draw]);
 
@@ -186,17 +352,18 @@ export function PianoRoll({
     const rect = canvas.getBoundingClientRect();
     const x = clientX - rect.left;
     const y = clientY - rect.top;
-    const tick = visibleStartTick + x / PX_PER_TICK;
+    const tick = getScrollStartTick() + x / pxPerTick;
     const hitLane = laneAtY(y);
     if (!hitLane) return null;
 
     const { lane, localY } = hitLane;
+    if (!isLaneInScope(lane.mixerId)) return { tick, lane: null as TrackLane | null };
 
     for (let index = lane.track.notes.length - 1; index >= 0; index--) {
       const note = lane.track.notes[index];
       const absStart = note.start_tick + lane.offset;
-      const nx = (absStart - visibleStartTick) * PX_PER_TICK;
-      const nw = note.duration_ticks * PX_PER_TICK;
+      const nx = (absStart - getScrollStartTick()) * pxPerTick;
+      const nw = note.duration_ticks * pxPerTick;
       const ny = lanePitchY(note.pitch, lane);
       if (x >= nx && x <= nx + nw && localY >= ny && localY <= ny + NOTE_HIT_HEIGHT) {
         return {
@@ -222,6 +389,10 @@ export function PianoRoll({
   const onPointerDown = (e: React.PointerEvent) => {
     const hit = hitTest(e.clientX, e.clientY);
     if (!hit) return;
+
+    if (mode === "select" && "tick" in hit && typeof hit.tick === "number" && !("index" in hit && hit.index !== undefined)) {
+      onSeek(snapTick(Math.round(hit.tick), ppq, snap));
+    }
 
     if (mode === "draw" && "tick" in hit && typeof hit.tick === "number" && hit.lane) {
       const start = snapTick(Math.round(hit.tick), ppq, snap);
@@ -254,7 +425,7 @@ export function PianoRoll({
 
   const onPointerMove = (e: React.PointerEvent) => {
     if (!dragRef.current || !selected) return;
-    const deltaTicks = Math.round((e.clientX - dragRef.current.startX) / PX_PER_TICK);
+    const deltaTicks = Math.round((e.clientX - dragRef.current.startX) / pxPerTick);
     const snapped = snapTick(dragRef.current.origStart + deltaTicks, ppq, snap);
     if (dragRef.current.kind === "move") {
       onEdit("move", {
@@ -289,7 +460,7 @@ export function PianoRoll({
 
   return (
     <div className="flex h-full flex-col gap-2">
-      <div className="flex items-center gap-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
         {(["select", "draw", "erase"] as EditMode[]).map((m) => (
           <button
             key={m}
@@ -300,6 +471,20 @@ export function PianoRoll({
             {m}
           </button>
         ))}
+        <span className="text-muted">Ctrl+wheel to zoom · scroll to navigate</span>
+        <div className="flex items-center gap-1 border-l border-border pl-2">
+          <span className="text-muted">Tracks:</span>
+          {(["all", "selected"] as TrackScopeMode[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`rounded px-2 py-1 capitalize ${trackScopeMode === m ? "bg-accent/20 text-accent" : "bg-panel border border-border"}`}
+              onClick={() => onTrackScopeModeChange(m)}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
         {selectedNote && (
           <label className="ml-auto flex items-center gap-2 text-muted">
             Velocity
@@ -336,15 +521,23 @@ export function PianoRoll({
               const mute = lane.track.mute ?? false;
               const solo = lane.track.solo ?? false;
               const volume = lane.track.volume ?? 1;
+              const trackSelected = selectedTrackIds.has(lane.mixerId);
 
               return (
                 <div
                   key={`${lane.songId}-${lane.track.track_id}`}
-                  className="flex flex-col justify-center gap-1 border-b border-border px-2 py-1"
+                  className={`flex flex-col justify-center gap-1 border-b border-border px-2 py-1 ${trackSelected ? "bg-accent/10" : ""}`}
                   style={{ height: LANE_HEIGHT }}
                   title={`Track ${trackNum}: ${lane.track.name}`}
                 >
                   <div className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={trackSelected}
+                      onChange={() => onToggleTrack(lane.mixerId)}
+                      aria-label={`Select track ${trackNum} for edits`}
+                      className="shrink-0"
+                    />
                     <span className="w-5 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted">
                       {trackNum || "—"}
                     </span>
@@ -390,17 +583,26 @@ export function PianoRoll({
         <div
           ref={notesScrollRef}
           className="min-w-0 flex-1 overflow-auto"
-          onScroll={() => syncVerticalScroll("notes")}
+          onScroll={handleHorizontalScroll}
         >
-          <canvas
-            ref={canvasRef}
-            style={{ height: canvasHeight, minWidth: "100%" }}
-            className="cursor-crosshair"
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerLeave={onPointerUp}
-          />
+          <div style={{ width: scrollContentWidth, height: canvasHeight, position: "relative" }}>
+            <canvas
+              ref={canvasRef}
+              style={{
+                position: "sticky",
+                left: 0,
+                top: 0,
+                width: viewportWidth,
+                height: canvasHeight,
+                display: "block",
+              }}
+              className="cursor-crosshair"
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerLeave={onPointerUp}
+            />
+          </div>
         </div>
       </div>
     </div>

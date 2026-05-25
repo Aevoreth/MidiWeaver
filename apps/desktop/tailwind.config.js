@@ -19,6 +19,8 @@ export default {
         success: "var(--color-success)",
         warning: "var(--color-warning)",
         error: "var(--color-error)",
+        "edit-range": "var(--color-edit-range)",
+        transition: "var(--color-transition)",
       },
       fontFamily: {
         sans: ["Segoe UI", "system-ui", "sans-serif"],

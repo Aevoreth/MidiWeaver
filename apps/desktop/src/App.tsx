@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Download,
   FolderOpen,
+  Maximize2,
   Music,
   Plus,
   Settings,
   Upload,
+  ZoomIn,
 } from "lucide-react";
 import {
   api,
@@ -13,10 +15,12 @@ import {
   type TimelineData,
   type TrackMappingEntry,
 } from "@/lib/api";
-import { barToTicks, MASTER_ROLES, mixerTrackId } from "@/lib/utils";
+import { MASTER_ROLES, mixerTrackId } from "@/lib/utils";
 import { Button, Badge } from "@/components/ui/button";
-import { TimelineView } from "@/features/timeline/TimelineView";
-import { PianoRoll } from "@/features/timeline/PianoRoll";
+import { MasterTimeline } from "@/features/timeline/MasterTimeline";
+import { PianoRoll, type TrackScopeMode } from "@/features/timeline/PianoRoll";
+import { getTransitionTickRange, projectTotalTicks, tickRangeToBarRange } from "@/features/timeline/timelineUtils";
+import { useTimelineViewport } from "@/features/timeline/useTimelineViewport";
 import { TransportBar } from "@/features/transport/TransportBar";
 import { AIPlannerPanel } from "@/features/ai-planner/AIPlannerPanel";
 import { SettingsPanel } from "@/features/settings/SettingsPanel";
@@ -27,17 +31,51 @@ export default function App() {
   const [timeline, setTimeline] = useState<TimelineData | null>(null);
   const [playheadTick, setPlayheadTick] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [followPlayhead, setFollowPlayhead] = useState(false);
   const [snap, setSnap] = useState("bar");
   const [selectedTransitionId, setSelectedTransitionId] = useState<string | null>(null);
-  const [selectionRange, setSelectionRange] = useState<[number, number]>([0, 8]);
   const [showSettings, setShowSettings] = useState(false);
   const [status, setStatus] = useState("");
   const [lastDiff, setLastDiff] = useState<RevisionDiff | null>(null);
   const [trackMapping, setTrackMapping] = useState<TrackMappingEntry[]>([]);
   const [sidebarTab, setSidebarTab] = useState<"songs" | "mapping" | "ai">("ai");
   const [transportError, setTransportError] = useState<string | null>(null);
+  const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
+  const [trackScopeMode, setTrackScopeMode] = useState<TrackScopeMode>("all");
 
   const ppq = timeline?.master_ppq ?? 480;
+  const totalTicks = projectTotalTicks(timeline, ppq);
+
+  const viewport = useTimelineViewport(totalTicks, ppq);
+
+  const {
+    scrollStartTick,
+    viewRange,
+    editRange,
+    pxPerTick,
+    setViewportWidthPx,
+    setScrollStartTick,
+    setViewRange,
+    setEditRange,
+    zoomAt,
+    zoomToEditRange,
+    zoomToTransitionRange,
+    zoomFitAll,
+  } = viewport;
+
+  const transitionRange = useMemo(() => {
+    if (!timeline || !selectedTransitionId) return null;
+    const trans = timeline.transitions.find((t) => t.id === selectedTransitionId);
+    return trans ? getTransitionTickRange(timeline, trans) : null;
+  }, [timeline, selectedTransitionId]);
+
+  useEffect(() => {
+    if (timeline && totalTicks > 0) {
+      zoomFitAll();
+    }
+    // Only refit when project timeline identity changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeline?.total_ticks, timeline?.segments.length]);
 
   const refreshTimeline = useCallback(async (path: string) => {
     const tl = await api.getTimeline(path);
@@ -62,6 +100,67 @@ export default function App() {
     }, 150);
     return () => clearInterval(id);
   }, [playing, projectPath]);
+
+  const seekTo = useCallback(
+    async (tick: number) => {
+      const clamped = Math.max(0, Math.min(totalTicks, tick));
+      setPlayheadTick(clamped);
+      if (!projectPath) return;
+      try {
+        await api.transport("seek", clamped, projectPath);
+      } catch {
+        /* engine may be offline */
+      }
+    },
+    [projectPath, totalTicks],
+  );
+
+  const handleSelectTransition = useCallback(
+    (id: string | null) => {
+      setSelectedTransitionId(id);
+      if (id && timeline) {
+        const trans = timeline.transitions.find((t) => t.id === id);
+        if (trans) {
+          const range = getTransitionTickRange(timeline, trans);
+          if (range) setEditRange(range);
+        }
+      }
+    },
+    [timeline, setEditRange],
+  );
+
+  const handleTransitionMarkersCommit = useCallback(
+    async (mixOutBars: number, mixInBars: number) => {
+      if (!projectPath || !selectedTransitionId) return;
+      const result = await api.applyOps(
+        projectPath,
+        [
+          {
+            op_type: "set_transition_markers",
+            params: {
+              transition_id: selectedTransitionId,
+              mix_out_bars: mixOutBars,
+              mix_in_bars: mixInBars,
+            },
+            enabled: true,
+          },
+        ],
+        "Adjust transition range",
+      );
+      setTimeline(result.timeline);
+      setLastDiff(result.revision.diff ?? null);
+    },
+    [projectPath, selectedTransitionId],
+  );
+
+  const toggleTrack = useCallback((trackId: string) => {
+    setSelectedTrackIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(trackId)) next.delete(trackId);
+      else next.add(trackId);
+      return next;
+    });
+  }, []);
 
   const newProject = async () => {
     const name = prompt("Project name", "My Setlist");
@@ -132,8 +231,7 @@ export default function App() {
     [],
   );
 
-  const visibleStart = barToTicks(selectionRange[0], ppq);
-  const visibleEnd = barToTicks(selectionRange[1], ppq);
+  const editBarRange = tickRangeToBarRange(editRange, ppq);
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
@@ -279,8 +377,12 @@ export default function App() {
                   user_prompt: prompt,
                   selection: {
                     scope: "transition",
-                    master_bar_range: selectionRange,
+                    master_bar_range: editBarRange,
                     transition_id: trans?.id,
+                    track_ids:
+                      trackScopeMode === "selected" && selectedTrackIds.size > 0
+                        ? [...selectedTrackIds]
+                        : undefined,
                   },
                   constraints,
                   mock: true,
@@ -302,7 +404,7 @@ export default function App() {
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col gap-2 p-2">
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
             <label className="text-muted">Snap</label>
             <select
               value={snap}
@@ -315,40 +417,66 @@ export default function App() {
               <option value="sixteenth">1/16</option>
               <option value="none">Off</option>
             </select>
-            <label className="text-muted ml-2">Selection bars</label>
-            <input
-              type="number"
-              className="w-14 rounded border border-border bg-surface px-1"
-              value={selectionRange[0]}
-              onChange={(e) => setSelectionRange([Number(e.target.value), selectionRange[1]])}
-            />
-            <span className="text-muted">–</span>
-            <input
-              type="number"
-              className="w-14 rounded border border-border bg-surface px-1"
-              value={selectionRange[1]}
-              onChange={(e) => setSelectionRange([selectionRange[0], Number(e.target.value)])}
-            />
+
+            <span className="ml-2 text-muted">
+              Edit range: {editBarRange[0].toFixed(1)}–{editBarRange[1].toFixed(1)} bars
+            </span>
+
+            <div className="ml-auto flex items-center gap-1">
+              <Button variant="secondary" size="sm" onClick={zoomFitAll} title="Fit entire set">
+                <Maximize2 className="h-3.5 w-3.5" /> Fit all
+              </Button>
+              <Button variant="secondary" size="sm" onClick={zoomToEditRange} title="Zoom detail to edit range">
+                <ZoomIn className="h-3.5 w-3.5" /> Zoom edit
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={!transitionRange}
+                onClick={() => zoomToTransitionRange(transitionRange)}
+                title="Zoom detail to selected transition"
+              >
+                <ZoomIn className="h-3.5 w-3.5" /> Zoom transition
+              </Button>
+            </div>
           </div>
 
-          <div className="h-28 shrink-0">
-            <TimelineView
+          <div className="h-36 shrink-0">
+            <MasterTimeline
               timeline={timeline}
               playheadTick={playheadTick}
+              viewRange={viewRange}
+              editRange={editRange}
               selectedTransitionId={selectedTransitionId}
-              onSelectTransition={setSelectedTransitionId}
-              onSeek={setPlayheadTick}
+              transitionRange={transitionRange}
               snap={snap}
+              onSeek={seekTo}
+              onSelectTransition={handleSelectTransition}
+              onViewRangeChange={setViewRange}
+              onEditRangeChange={setEditRange}
+              onTransitionMarkersCommit={handleTransitionMarkersCommit}
             />
           </div>
 
           <div className="min-h-0 flex-1">
             <PianoRoll
               timeline={timeline}
+              totalTicks={totalTicks}
               playheadTick={playheadTick}
+              playing={playing}
+              followPlayhead={followPlayhead}
               snap={snap}
-              visibleStartTick={visibleStart}
-              visibleEndTick={visibleEnd}
+              pxPerTick={pxPerTick}
+              scrollStartTick={scrollStartTick}
+              editRange={editRange}
+              selectedTrackIds={selectedTrackIds}
+              trackScopeMode={trackScopeMode}
+              onToggleTrack={toggleTrack}
+              onTrackScopeModeChange={setTrackScopeMode}
+              onViewportWidthChange={setViewportWidthPx}
+              onScrollStartChange={setScrollStartTick}
+              onZoomAt={zoomAt}
+              onSeek={seekTo}
               onEdit={applyManualEdit}
               onMixerChange={handleMixerChange}
             />
@@ -366,7 +494,9 @@ export default function App() {
         playing={playing}
         playheadTick={playheadTick}
         ppq={ppq}
+        followPlayhead={followPlayhead}
         error={transportError}
+        onFollowPlayheadChange={setFollowPlayhead}
         onPlay={async () => {
           if (!projectPath) {
             setTransportError("Create or open a project before playing.");
@@ -412,7 +542,7 @@ export default function App() {
             setTransportError(err instanceof Error ? err.message : "Stop failed");
           }
         }}
-        onSeekStart={() => setPlayheadTick(0)}
+        onSeekStart={() => seekTo(0)}
       />
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
