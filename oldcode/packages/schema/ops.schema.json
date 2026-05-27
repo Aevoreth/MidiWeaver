@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://midiweaver.dev/schema/ops.schema.json",
+  "title": "OperationPlan",
+  "type": "object",
+  "required": ["plan_summary", "ops"],
+  "properties": {
+    "plan_summary": { "type": "string" },
+    "tempo_options": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/TempoOption" },
+      "minItems": 1,
+      "maxItems": 3
+    },
+    "selected_tempo_option_index": { "type": "integer", "minimum": 0 },
+    "ops": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Operation" }
+    }
+  },
+  "definitions": {
+    "TempoOption": {
+      "type": "object",
+      "required": ["label", "policy", "duration_bars", "start_bpm", "end_bpm"],
+      "properties": {
+        "label": { "type": "string" },
+        "policy": {
+          "type": "string",
+          "enum": ["linear_ramp", "exponential_ramp", "step_at_boundary", "hold_song1_then_ramp"]
+        },
+        "duration_bars": { "type": "number", "minimum": 0 },
+        "start_bpm": { "type": "number", "minimum": 20, "maximum": 300 },
+        "end_bpm": { "type": "number", "minimum": 20, "maximum": 300 }
+      }
+    },
+    "Operation": {
+      "type": "object",
+      "required": ["op_type", "params"],
+      "properties": {
+        "op_type": {
+          "type": "string",
+          "enum": [
+            "trim_silence",
+            "set_transition_markers",
+            "tempo_ramp",
+            "extend_drums",
+            "add_dj_drums",
+            "copy_notes",
+            "echo_notes",
+            "shift_song",
+            "insert_master_gap",
+            "loop_region",
+            "delete_notes_in_region",
+            "insert_song",
+            "transpose_region",
+            "quantize_region",
+            "set_velocity_curve",
+            "mute_track",
+            "manual_edit_note"
+          ]
+        },
+        "params": { "type": "object" },
+        "enabled": { "type": "boolean", "default": true },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}
